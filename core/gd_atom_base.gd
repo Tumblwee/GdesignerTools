@@ -239,8 +239,6 @@ class VisualAtom extends AtomBase:
 		return root
 
 	func populate(prefabs: Array, start_index: int = 0) -> void:
-		if prefabs == null:
-			return
 		var parent := ensure_visual_root()
 		if parent == null:
 			return
@@ -465,7 +463,7 @@ class AtomVarTagRegistry extends RefCounted:
 		return {"ok": true, "error": ""}
 
 	static func apply_overrides_to_node(root: Node, overrides: Array) -> int:
-		if root == null or overrides == null:
+		if root == null:
 			return 0
 		var applied := 0
 		var atoms: Array[AtomBase] = []

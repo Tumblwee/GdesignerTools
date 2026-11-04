@@ -65,28 +65,28 @@ class PlacementAttributeOverride extends Resource:
 
 	static func of_int(p_tag: String, v: int) -> PlacementAttributeOverride:
 		var ov := GDPlacementOverrideRes.new()
-		ov.tag = p_tag if p_tag != null else ""
+		ov.tag = p_tag
 		ov.value_type = GDCoreTypes.KeywordValueType.INT
 		ov.int_value = v
 		return ov
 
 	static func of_float(p_tag: String, v: float) -> PlacementAttributeOverride:
 		var ov := GDPlacementOverrideRes.new()
-		ov.tag = p_tag if p_tag != null else ""
+		ov.tag = p_tag
 		ov.value_type = GDCoreTypes.KeywordValueType.FLOAT
 		ov.float_value = v
 		return ov
 
 	static func of_string(p_tag: String, v: String) -> PlacementAttributeOverride:
 		var ov := GDPlacementOverrideRes.new()
-		ov.tag = p_tag if p_tag != null else ""
+		ov.tag = p_tag
 		ov.value_type = GDCoreTypes.KeywordValueType.STRING
-		ov.string_value = v if v != null else ""
+		ov.string_value = v
 		return ov
 
 	static func of_bool(p_tag: String, v: bool) -> PlacementAttributeOverride:
 		var ov := GDPlacementOverrideRes.new()
-		ov.tag = p_tag if p_tag != null else ""
+		ov.tag = p_tag
 		ov.value_type = GDCoreTypes.KeywordValueType.BOOL
 		ov.bool_value = v
 		return ov
@@ -123,9 +123,9 @@ class PlacementInstanceExtra extends Resource:
 	@export var json: String = ""
 
 	func _init(p_key: String = "", p_version: int = 0, p_json: String = "") -> void:
-		key = p_key if p_key != null else ""
+		key = p_key
 		version = p_version
-		json = p_json if p_json != null else ""
+		json = p_json
 
 	func clone_extra() -> PlacementInstanceExtra:
 		return GDPlacementExtraRes.new(key, version, json)
@@ -194,20 +194,19 @@ class PlacementInstance extends Resource:
 	func with_overrides(p_overrides: Array) -> PlacementInstance:
 		var copy := _clone_shell(position, euler_angles, scale, initial_level)
 		copy.attribute_overrides.clear()
-		if p_overrides != null:
-			for ov in p_overrides:
-				if ov is PlacementAttributeOverride:
-					copy.attribute_overrides.append(ov.clone_override())
+		for ov in p_overrides:
+			if ov is PlacementAttributeOverride:
+				copy.attribute_overrides.append(ov.clone_override())
 		return copy
 
 	func with_name(new_name: String) -> PlacementInstance:
 		var copy := _clone_shell(position, euler_angles, scale, initial_level)
-		copy.instance_name = new_name if new_name != null else ""
+		copy.instance_name = new_name
 		return copy
 
 	func with_display_name(new_display_name: String) -> PlacementInstance:
 		var copy := _clone_shell(position, euler_angles, scale, initial_level)
-		copy.display_name = new_display_name if new_display_name != null else ""
+		copy.display_name = new_display_name
 		return copy
 
 	func with_archetype_stable_id(new_arch_id: int) -> PlacementInstance:
@@ -227,8 +226,8 @@ class PlacementInstance extends Resource:
 		archetype_stable_id = new_arch_id
 
 	func editor_init_instance_identity(p_name: String, p_display_name: String) -> void:
-		instance_name = p_name if p_name != null else ""
-		display_name = p_display_name if p_display_name != null else ""
+		instance_name = p_name
+		display_name = p_display_name
 
 	func _clone_shell(p_pos: Vector3, p_euler: Vector3, p_scale: Vector3, p_level: int) -> PlacementInstance:
 		var copy := GDPlacementInstanceRes.new(instance_id, archetype_stable_id, p_pos, p_euler, p_scale, p_level)
@@ -260,8 +259,6 @@ class PlacementInstanceIdRangeLogic extends RefCounted:
 		next_instance_id: int,
 		occupied: Dictionary
 	) -> Dictionary:
-		if occupied == null:
-			return {"ok": false, "instance_id": 0, "new_next_instance_id": next_instance_id, "error": "occupied 不能为 null。"}
 		if use_custom_range:
 			var val_res := try_validate_custom_range(min_id, max_id)
 			if not bool(val_res.get("ok", false)):
@@ -316,17 +313,16 @@ class PlacementInstanceIdRangeLogic extends RefCounted:
 
 		var owned: Array[PlacementInstance] = []
 		var foreign_occupied: Dictionary = {}
-		if placements != null:
-			for p in placements:
-				if p == null or not (p is PlacementInstance):
-					continue
-				var inst := p as PlacementInstance
-				if inst.instance_id <= 0:
-					continue
-				if inst.archetype_stable_id == archetype_stable_id:
-					owned.append(inst)
-				else:
-					foreign_occupied[inst.instance_id] = true
+		for p in placements:
+			if p == null or not (p is PlacementInstance):
+				continue
+			var inst := p as PlacementInstance
+			if inst.instance_id <= 0:
+				continue
+			if inst.archetype_stable_id == archetype_stable_id:
+				owned.append(inst)
+			else:
+				foreign_occupied[inst.instance_id] = true
 
 		owned.sort_custom(func(a: PlacementInstance, b: PlacementInstance) -> bool:
 			return a.instance_id < b.instance_id
@@ -359,7 +355,7 @@ class PlacementInstanceIdRangeLogic extends RefCounted:
 		var temps: Array[int] = []
 		var candidate := -1
 		while temps.size() < count:
-			if occupied == null or not occupied.has(candidate):
+			if not occupied.has(candidate):
 				temps.append(candidate)
 			candidate -= 1
 		return temps

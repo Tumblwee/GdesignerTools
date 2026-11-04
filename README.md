@@ -1,86 +1,71 @@
-# GdesignerTools — Godot 4 通用游戏策划工具套件 (v1.0)
+# GdesignerTools
 
-`GdesignerTools` 是从 Unity 原项目五大核心包（`com.timiminigame.core`、`com.timiminigame.scene-editor`、`com.timi.ioplatform.actor-editor`、`com.timi.ioplatform.skill`、`com.timi.ioplatform.guide`）完整还原至 **Godot 4.x** 的通用策划工具链插件。
+Godot 4.7 的策划工具套件：关卡、演员、技能、新手引导，共用一套界面和撤销系统。
 
-## 目录结构与双路径说明
+工具开在一个非模态窗口里，可以放在 3D 视口旁边或第二块屏幕上；原型直接从列表拖进视口摆放。
 
-- **`res://addons/gdesigner_tools/`（`D:\GodotTemplate\addons\gdesigner_tools`）**：Godot 4 标准 EditorPlugin 插件启用目录（在 `project.godot` 中自动挂载启用）。插件打开的是非模态独立窗口，不占用 2D/3D 主屏，关卡页可以把原型拖进当前视口。
-- **`D:\GodotTemplate\GdesignerTools\`**：与 `addons/gdesigner_tools` 完全同步的独立源码目录镜像（内含 `.gdignore` 以避免 Godot 重复扫描同名 `class_name`）。
+## 使用
 
-```text
-addons/gdesigner_tools/ (及 GdesignerTools/)
-├── sample/
-│   └── gd_sample_factory.gd                    # 通用示例实例（演员库 / 关卡 / 实体预制）
-├── plugin.cfg                                  # Godot 插件配置清单
-├── plugin.gd / gdesigner_tools_plugin.gd       # EditorPlugin 主入口（独立窗口 + 视口拖拽落点）
-├── gdesigner_tools_window.gd                   # 非模态独立窗口
-├── gdesigner_tools_main_dock.gd                # 主工作台（集成四大编辑器 Tab + 原子创建器 + CLI 控制台）
-├── core/                                       # 1. Core 基础层 (com.timiminigame.core)
-│   ├── gd_core_types.gd                        # KeywordValueType / AtomType / ModuleCategory 等枚举与解析
-│   ├── gd_logger.gd                            # GameLogger (Verbose/Debug/Info/Warning/ErrorP/ErrorD/Assert)
-│   ├── gd_event_bus.gd                         # EventBus / ServiceLocator / CoreServices / UndoRedo
-│   ├── gd_attribute_set.gd                     # GAS AttributeSet: Current = Override ?? ((Base+Add)*(1+Mul))
-│   ├── gd_custom_attribute_def.gd              # CustomAttributeDef 自定义属性定义
-│   ├── gd_archetype_res.gd                     # ArchetypeRes 原型基类（StableId 1000+、复写链、自定义 ID 段）
-│   ├── gd_atom_base.gd                         # EntityNode / AtomBase / InteractableAtom / VisualAtom / UIAnchor3DAtom / AtomVarTagRegistry / FurnitureSlotGroupBehavior
-│   ├── gd_game_framework.gd                    # GameMode / GameStateMachine / ModuleTickDriver / GameModuleBase / BaseSystem / SystemContainer
-│   ├── gd_audio_engine.gd                      # 纯逻辑 AudioEngine / AudioBusMixer / AudioContainerSelector / VoiceSlot 抢占池
-│   ├── gd_hybrid_prefs.gd                      # HybridPrefs 跨会话偏好存储
-│   ├── gd_cli_root.gd                          # CliRoot / AtomCreator (atom.create / atom.list-templates)
-│   └── editor/
-│       ├── gd_atom_block_drawer.gd             # AtomPickerPopup / AtomCreatorWindow / 原子区块与自定义属性检视器
-│       ├── gd_preview_panel.gd                 # ArchetypePreviewPanel（环绕/平移/缩放/包围框/棋盘格）
-│       └── gd_cli_console_window.gd            # 统一可视化 CLI 控制台面板
-├── level_editor/                               # 2. 关卡编辑器 (com.timiminigame.scene-editor)
-│   ├── runtime/
-│   │   ├── gd_keyword_catalog.gd               # KeywordCatalogRes（单调 StableId、软删复活、枚举脚本生成与哈希校验）
-│   │   ├── gd_placement_instance.gd            # PlacementInstance (10000+) / Override / Extra / ID 段分配与两阶段标准化
-│   │   ├── gd_path_instance.gd                 # PathInstance (20000+) / SplineData (Curve3D) / RuntimePath / PathRuntimeRegistry
-│   │   ├── gd_camera_pose.gd                   # CameraPose（透视 XZ / 正交 XY 边界、缩放区间、初始 Zoom）
-│   │   ├── gd_level_scene_res.gd               # LevelSceneRes 关卡场景主资产
-│   │   └── gd_scene_editor_runtime.gd          # SceneEditorRuntime.load_session 一行装配与 5 大标准事件
-│   └── editor/
-│       ├── gd_level_editor_window.gd           # 关卡编辑器三栏主窗口 + 交互画布 + 自定义 ID 段检视器
-│       ├── gd_path_editor_window.gd            # PathEditorWindow 路径编辑工作台（含采样 t 滑条预览）
-│       ├── gd_camera_pose_window.gd            # CameraPoseEditorWindow 相机机位配置窗口
-│       ├── gd_level_popups.gd                  # 类型编辑弹窗 / 原型创建器 / 模块向导 / 重设实例 ID 弹窗
-│       ├── gd_level_csv_exporter.gd            # UTF-8 BOM CSV 导出器
-│       ├── gd_layout_migration.gd              # LayoutIdMigrationTool + 原型复写/复制/防环通用服务
-│       ├── gd_scene_editor_cli.gd              # 13 条标准 CLI (keywords.* / layout.* / scaffold.* / sceneeditor.*)
-│       └── gd_level_editor_l10n.gd             # 中英双语切换与偏好持久化
-├── actor_editor/                               # 3. 演员编辑器 (com.timi.ioplatform.actor-editor)
-│   ├── runtime/
-│   │   └── gd_actor_library_res.gd             # ActorLibraryRes / ActorArchetypeRes (StableId 1000+)
-│   └── editor/
-│       ├── gd_actor_services.gd                # 路径规范 / 重命名 / 复制(Name_N) / Override 复写防环与重绑服务
-│       └── gd_actor_editor_window.gd           # 演员编辑器双栏主窗口 + 库创建向导 + 原型创建器 + 原子宿主装配
-├── skill_editor/                               # 4. 技能编辑器 (com.timi.ioplatform.skill)
-│   ├── runtime/
-│   │   ├── gd_skill_types.gd                   # SkillIdentity / GameplayTagRes / GameplayEffectRes / SkillClock
-│   │   ├── gd_skill_clips.gd                   # 15 种内置 SkillClip + 4 种投射物轨迹 (Linear/Parabola/Homing/Bezier)
-│   │   ├── gd_skill_res.gd                     # 单资产 GDSkillRes (Header + Group + Track + Clip)
-│   │   ├── gd_skill_data.gd                    # 技能全量数据结构镜像
-│   │   └── gd_skill_runtime.gd                 # SkillRunner (同刻逻辑先于表现排序) / SkillRuntimeService / GameplayEffectApplier
-│   └── editor/
-│       ├── gd_skill_math_and_validator.gd      # SkillTimelineEditorMath / SkillAssetValidator / SkillLinter / SkillDoctor
-│       ├── gd_skill_forge_and_cli.gd           # SkillForge 确定性装配器 + 8 条 SkillCli 命令
-│       └── gd_skill_editor_window.gd           # 技能编辑器四区主窗口（技能库 + 时间轴 + 4 态 Inspector + 校验面板）
-├── guide_editor/                               # 5. 新手引导编辑器 (com.timi.ioplatform.guide)
-│   ├── runtime/
-│   │   ├── gd_guide_data.gd                    # 端口/信号/条件表达式/TargetRef/EventRef/Blackboard/Trace/Phase
-│   │   ├── gd_guide_atoms.gd                   # 15 种内置原子 + MissingAtom 兜底
-│   │   ├── gd_guide_host.gd                    # GuideConditionRegistry / GuideConditionEvaluator / GuideMemoryProgressStore / GuideHost
-│   │   ├── gd_guide_graph_and_validator.gd     # GuideGraphRes / GuideLibraryRes / GuideGraphValidator / GuideSchemaMigrator (v1->v2)
-│   │   └── gd_guide_runner.gd                  # GuideRunner (帧水位线/断点/单步/超时/Stall/子图栈) / GuideTriggerSystem
-│   └── editor/
-│       ├── gd_guide_editing_and_cli.gd         # GuideGraphLayout / GuideGraphEditing (强弱互转/点击录制) / GuideSampleGraphs / GuideCli
-│       └── gd_guide_editor_window.gd           # 新手引导编辑器主窗口（画布/小地图/调试器/录制条/搜索弹窗/模拟器/迁移横幅）
-└── tests/
-    └── test_gdesigner_tools.gd                 # Headless 自动化全量验证脚本
+打开方式：顶部工具栏 **GdesignerTools**，或 项目 → 工具 → GdesignerTools。
+
+每一页都是同一个布局：
+
+```
+文档名 ●  保存 撤销 重做 | 本页操作 …………………… 右侧操作 ⋯
+资产列表        |  工作区                    |  属性
 ```
 
-## 运行自动化测试
+| 页面 | 工作区 | 主要操作 |
+|------|--------|----------|
+| 关卡 | 俯视平面图 + 实例 / 路径 / 相机列表 | 把原型拖进 3D/2D 视口或平面图；拖圆点改位置；双击原型放到视口中心 |
+| 演员 | 实时 3D 预览 | 新建、复制、创建变体、改类型和外观 |
+| 技能 | 时间轴 | 拖片段移动，拖边缘改时长，双击轨道添加片段，Space 播放 |
+| 引导 | 节点图 | 从端口拖出连线，拖到空白处新建节点，F5 试跑，F9 断点 |
 
-```powershell
-& "D:\Godot\4.7.2\Godot_v4.7.2-stable_win64_console.exe" --headless --path "D:\GodotTemplate" -s "res://addons/gdesigner_tools/tests/test_gdesigner_tools.gd"
+通用约定：
+
+- 每一处改动都能撤销（Ctrl+Z / Ctrl+Y），所以删除不弹确认；只有会连带影响别的数据或写磁盘的操作才确认。
+- 列表和画布都支持右键菜单，以及 Delete、F2 重命名、Ctrl+D 复制。
+- 有未保存改动时，页签和文档名后面显示 ●；关闭编辑器时会提示保存。编辑器的“保存全部”和运行游戏也会一起保存。
+- Ctrl+\` 打开控制台。Tab 补全命令，↑↓ 翻历史；当前页面的资产路径会自动带上。
+
+默认保存位置：`res://game_res/level`、`res://game_res/actors`、`res://game_res/skill`、`res://game_res/guide`。
+
+## 结构
+
+```
+plugin.gd                       插件入口：窗口、工具菜单、视口拖放、未保存提示
+gdesigner_tools_window.gd       非模态窗口
+gdesigner_tools_main_dock.gd    外壳：页签、状态栏、控制台抽屉
+gdesigner_tools_cli.gd          统一命令行入口（各模块的命令表汇总）
+
+core/                           运行时基础：原子、属性集、事件总线、音频、GDDataCodec
+core/editor/                    编辑器基础，所有页面共用
+    gd_editor_ui.gd             设计令牌（tone 跟随编辑器主题）和控件工厂
+    gd_page.gd                  页面骨架：工具栏 + 三栏 + 文档
+    gd_document.gd              撤销栈、脏标记、保存
+    gd_form.gd                  声明式属性表单
+    gd_library_list.gd          可搜索、可分组的资产列表
+    gd_dialogs.gd               一次性对话框
+level_editor/  actor_editor/  skill_editor/  guide_editor/
+    runtime/                    数据与运行时，游戏里也能用
+    editor/                     页面、视图、命令行
+tests/                          headless 测试
+```
+
+### 数据流
+
+页面只做两件事：改模型，然后 `doc.commit("动作名")`。`GDDocument` 记录快照并发出 `changed`，页面在 `_refresh()` 里刷新视图。撤销把快照里的字段写回原对象，所以对象身份不变，选中项和外部引用都不会失效。
+
+### 存盘
+
+Godot 不能把脚本是内部类的 Resource 写进 `.tres`。技能的片段、引导图的节点、关卡的路径和相机都是内部类，因此由 `GDDataCodec` 统一编码成普通数据，存在一个 `@export_storage` 属性里。保存、加载、`duplicate()` 都不需要额外步骤；新增一个片段或节点类型，不用改编解码代码。
+
+## 测试
+
+```bash
+GODOT="D:/Godot/4.7.2/Godot_v4.7.2-stable_win64_console.exe"
+for t in test_gdesigner_tools test_level_page test_skill_page test_guide_page; do
+  "$GODOT" --headless --path . -s "res://addons/gdesigner_tools/tests/$t.gd"
+done
 ```

@@ -89,12 +89,12 @@ class CameraPose extends Resource:
 
 	func with_name(new_name: String) -> CameraPose:
 		var copy := _clone_shell()
-		copy.pose_name = new_name if new_name != null else ""
+		copy.pose_name = new_name
 		return copy
 
 	func with_display_name(new_display_name: String) -> CameraPose:
 		var copy := _clone_shell()
-		copy.display_name = new_display_name if new_display_name != null else ""
+		copy.display_name = new_display_name
 		return copy
 
 	func with_pose(p_pos: Vector3, p_euler: Vector3, p_fov: float) -> CameraPose:
@@ -170,8 +170,8 @@ class CameraPose extends Resource:
 		return copy
 
 	func editor_init_identity(p_name: String, p_display_name: String) -> void:
-		pose_name = p_name if p_name != null else ""
-		display_name = p_display_name if p_display_name != null else ""
+		pose_name = p_name
+		display_name = p_display_name
 
 	func _clone_shell() -> CameraPose:
 		var copy := CameraPose.new(position, euler_angles, fov)

@@ -28,7 +28,7 @@ class KeywordIdentifierUtil extends RefCounted:
 	}
 
 	static func validate_identifier(ident: String, policy: int = IdentifierPolicy.KEYWORD_ENTRY) -> Dictionary:
-		if ident == null or ident.is_empty():
+		if ident.is_empty():
 			return {"ok": false, "reason": "标识符不能为空。"}
 		var c0 := ident.unicode_at(0)
 		var first_ok := (c0 >= 65 and c0 <= 90) or (c0 >= 97 and c0 <= 122) or c0 == 95
@@ -49,13 +49,13 @@ class KeywordIdentifierUtil extends RefCounted:
 		return bool(validate_identifier(ident, policy).get("ok", false))
 
 	static func is_pascal_case(ident: String) -> bool:
-		if ident == null or ident.is_empty():
+		if ident.is_empty():
 			return false
 		var c0 := ident.unicode_at(0)
 		return c0 >= 65 and c0 <= 90
 
 	static func validate_namespace(ns: String) -> Dictionary:
-		if ns == null or ns.strip_edges().is_empty():
+		if ns.strip_edges().is_empty():
 			return {"ok": false, "reason": "namespace 不能为空。"}
 		var segments := ns.strip_edges().split(".")
 		for seg in segments:
@@ -84,11 +84,11 @@ class KeywordEntry extends Resource:
 		deprecated = v
 
 	func editor_set_metadata(p_display_name: String, p_description: String) -> void:
-		display_name = p_display_name if p_display_name != null else ""
-		description = p_description if p_description != null else ""
+		display_name = p_display_name
+		description = p_description
 
 	func editor_set_icon_id(p_icon_id: String) -> void:
-		icon_id = p_icon_id if p_icon_id != null else ""
+		icon_id = p_icon_id
 
 
 class KeywordCatalogSnapshotEntry extends Resource:
@@ -118,7 +118,7 @@ class KeywordCatalogRes extends Resource:
 			return generated_file_path.replace("\\", "/").get_base_dir()
 
 	func editor_set_generated_output_folder(folder: String) -> void:
-		var clean := (folder if folder != null else "").strip_edges().replace("\\", "/").trim_suffix("/")
+		var clean := folder.strip_edges().replace("\\", "/").trim_suffix("/")
 		if clean.is_empty():
 			generated_file_path = ""
 		else:
@@ -129,7 +129,7 @@ class KeywordCatalogRes extends Resource:
 		emit_changed()
 
 	func add_entry(p_name: String, p_display_name: String = "", p_description: String = "") -> KeywordEntry:
-		if p_name == null or p_name.strip_edges().is_empty():
+		if p_name.strip_edges().is_empty():
 			GDGameLogger.log_error_d("[KeywordCatalogRes] AddEntry: name 不能为空。")
 			return null
 		var clean_name := p_name.strip_edges()
@@ -166,7 +166,7 @@ class KeywordCatalogRes extends Resource:
 		return true
 
 	func rename_entry(old_name: String, new_name: String) -> bool:
-		if new_name == null or new_name.strip_edges().is_empty():
+		if new_name.strip_edges().is_empty():
 			GDGameLogger.log_error_d("[KeywordCatalogRes] RenameEntry: newName 不能为空。")
 			return false
 		var clean_new := new_name.strip_edges()

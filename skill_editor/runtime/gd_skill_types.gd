@@ -73,7 +73,7 @@ enum AttributeKind {
 
 ## 属性名映射（对应 AttributeNameMap）
 static func try_map_attribute_name(attr_name: String) -> Dictionary:
-	if attr_name == null or attr_name.is_empty():
+	if attr_name.is_empty():
 		return {"ok": false, "kind": 0}
 	match attr_name.strip_edges().to_lower():
 		"hp", "health":
@@ -104,6 +104,17 @@ static func track_kind_name(kind: int) -> String:
 		SkillTrackKind.VFX: return "Vfx"
 		_: return "Effect"
 
+## 界面显示用。数据和 CLI 仍用 track_kind_name 的英文标识。
+static func track_kind_label(kind: int) -> String:
+	match kind:
+		SkillTrackKind.ANIMATION: return "动画"
+		SkillTrackKind.MOVEMENT: return "位移"
+		SkillTrackKind.HITBOX: return "判定"
+		SkillTrackKind.AUDIO: return "音频"
+		SkillTrackKind.CAMERA: return "相机"
+		SkillTrackKind.VFX: return "特效"
+		_: return "效果"
+
 static func parse_track_kind(s: String) -> int:
 	match s.strip_edges().to_lower():
 		"animation": return SkillTrackKind.ANIMATION
@@ -123,10 +134,10 @@ class SkillIdentity extends RefCounted:
 	const LEGACY_SUFFIX := "_Skill"
 
 	static func to_asset_name(skill_name: String, skill_id: int) -> String:
-		return "%s%s_%d" % [ASSET_PREFIX, skill_name if skill_name != null else "", skill_id]
+		return "%s%s_%d" % [ASSET_PREFIX, skill_name, skill_id]
 
 	static func is_valid_name(skill_name: String) -> bool:
-		if skill_name == null or skill_name.is_empty():
+		if skill_name.is_empty():
 			return false
 		var c0 := skill_name.unicode_at(0)
 		var first_ok := (c0 >= 65 and c0 <= 90) or (c0 >= 97 and c0 <= 122) or c0 == 95
@@ -140,7 +151,7 @@ class SkillIdentity extends RefCounted:
 		return true
 
 	static func try_parse_asset_name(asset_name: String) -> Dictionary:
-		if asset_name == null or not asset_name.begins_with(ASSET_PREFIX):
+		if not asset_name.begins_with(ASSET_PREFIX):
 			return {"ok": false, "name": "", "id": 0}
 		var rest := asset_name.substr(ASSET_PREFIX.length())
 		if rest.ends_with(LEGACY_SUFFIX):
@@ -154,7 +165,7 @@ class SkillIdentity extends RefCounted:
 		return try_split_name_and_trailing_id(rest)
 
 	static func try_split_compact_name(compact: String) -> Dictionary:
-		if compact == null or compact.is_empty():
+		if compact.is_empty():
 			return {"ok": false, "name": "", "id": 0}
 		var last_letter := compact.length() - 1
 		while last_letter >= 0 and compact.unicode_at(last_letter) >= 48 and compact.unicode_at(last_letter) <= 57:
@@ -170,7 +181,7 @@ class SkillIdentity extends RefCounted:
 		return {"ok": true, "name": n, "id": tail.to_int()}
 
 	static func try_split_name_and_trailing_id(name_and_id: String) -> Dictionary:
-		if name_and_id == null or name_and_id.is_empty():
+		if name_and_id.is_empty():
 			return {"ok": false, "name": "", "id": 0}
 		var last := name_and_id.rfind("_")
 		if last <= 0 or last >= name_and_id.length() - 1:
@@ -184,7 +195,7 @@ class SkillIdentity extends RefCounted:
 		return {"ok": true, "name": n, "id": tail.to_int()}
 
 	static func try_normalize(raw_name: String, raw_id: int) -> Dictionary:
-		var n := raw_name.strip_edges() if raw_name != null else ""
+		var n := raw_name.strip_edges()
 		var id := raw_id
 		var split := try_split_compact_name(n)
 		if bool(split.get("ok", false)):
@@ -198,45 +209,6 @@ class SkillIdentity extends RefCounted:
 		if is_valid_name(n) and id >= 0:
 			return {"ok": true, "name": n, "id": id}
 		return {"ok": false, "name": "", "id": 0}
-
-
-## GameplayTagSO 对应（带 ParentTag 祖孙树与防环 IsDescendantOf）
-class GameplayTagRes extends Resource:
-	@export var tag_name: String = ""
-	@export var parent_tag: GameplayTagRes = null
-	@export_multiline var description: String = ""
-
-	func is_descendant_of(other: GameplayTagRes) -> bool:
-		if other == null:
-			return false
-		var cursor: GameplayTagRes = self
-		var safety := 64
-		while cursor != null and safety > 0:
-			safety -= 1
-			if cursor == other:
-				return true
-			cursor = cursor.parent_tag
-		return false
-
-
-## GameplayEffectModifier 对应
-class GameplayEffectModifier extends Resource:
-	@export var attribute_name: String = ""
-	@export var op: int = ModifierOp.ADD
-	@export var magnitude: float = 0.0
-
-	func _init(p_attr: String = "", p_op: int = ModifierOp.ADD, p_mag: float = 0.0) -> void:
-		attribute_name = p_attr
-		op = p_op
-		magnitude = p_mag
-
-
-## GameplayEffectSO 对应
-class GameplayEffectRes extends Resource:
-	@export var duration: float = 0.0
-	@export var period: float = 0.0
-	@export var modifiers: Array[GameplayEffectModifier] = []
-	@export var granted_tags: Array[GameplayTagRes] = []
 
 
 ## SkillClock 对应：技能模块级可暂停时钟（引用计数式暂停 + 同帧去重守卫）

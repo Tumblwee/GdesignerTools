@@ -10,6 +10,8 @@ const EVENT_PLACEMENT_DESPAWNED := "PlacementDespawnedEvent"
 const EVENT_PLACEMENT_LEVEL_CHANGED := "PlacementLevelChangedEvent"
 const EVENT_PLACEMENT_CLICKED := "PlacementClickedEvent"
 const EVENT_PLACEMENT_LONG_PRESSED := "PlacementLongPressedEvent"
+## 编辑器摆进场景的实例节点上记录 instance_id 的 meta 键；运行时据此采纳已有节点。
+const PLACEMENT_ID_META := "gdesigner_placement_id"
 
 
 class PlacementInstanceMarker extends Node:
@@ -178,7 +180,7 @@ static func find_placement_root(parent: Node, instance_id: int) -> Node:
 
 
 static func _find_placement_root(node: Node, instance_id: int) -> Node:
-	if int(node.get_meta("gdesigner_placement_id", 0)) == instance_id:
+	if int(node.get_meta(PLACEMENT_ID_META, 0)) == instance_id:
 		return node
 	for child in node.get_children():
 		var found := _find_placement_root(child, instance_id)

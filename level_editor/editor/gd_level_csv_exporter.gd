@@ -16,7 +16,7 @@ static func build_csv(layout: GDLevelSceneRes) -> String:
 		return ""
 	var lines: PackedStringArray = PackedStringArray()
 	lines.append(HEADER)
-	if layout.placements == null or layout.placements.is_empty():
+	if layout.placements.is_empty():
 		return "\n".join(lines) + "\n"
 
 	var arch_names := _build_archetype_name_lookup(layout.archetypes)
@@ -35,8 +35,8 @@ static func build_csv(layout: GDLevelSceneRes) -> String:
 			escape_csv_field(str(p.instance_id)),
 			escape_csv_field(str(p.archetype_stable_id)),
 			escape_csv_field(arch_name),
-			escape_csv_field(p.instance_name if p.instance_name != null else ""),
-			escape_csv_field(p.display_name if p.display_name != null else ""),
+			escape_csv_field(p.instance_name),
+			escape_csv_field(p.display_name),
 			escape_csv_field(_format_float(p.position.x)),
 			escape_csv_field(_format_float(p.position.y)),
 			escape_csv_field(_format_float(p.position.z)),
@@ -55,9 +55,9 @@ static func build_csv(layout: GDLevelSceneRes) -> String:
 
 static func try_write_to_file(layout: GDLevelSceneRes, file_path: String) -> Dictionary:
 	if layout == null:
-		return {"ok": false, "error": GDSceneEditorL10n.l("LevelSceneSO 为 null。")}
-	if file_path == null or file_path.strip_edges().is_empty():
-		return {"ok": false, "error": GDSceneEditorL10n.l("未选择导出路径。")}
+		return {"ok": false, "error": "没有关卡。"}
+	if file_path.strip_edges().is_empty():
+		return {"ok": false, "error": "未选择导出路径。"}
 	var csv := build_csv(layout)
 	var abs_path := ProjectSettings.globalize_path(file_path) if file_path.begins_with("res://") or file_path.begins_with("user://") else file_path
 	var dir_path := abs_path.get_base_dir()
@@ -66,17 +66,13 @@ static func try_write_to_file(layout: GDLevelSceneRes, file_path: String) -> Dic
 	var f := FileAccess.open(abs_path, FileAccess.WRITE)
 	if f == null:
 		return {"ok": false, "error": "无法打开文件写入：%s" % file_path}
-	# 写入 UTF-8 BOM (EF BB BF) + 内容
-	var bom := PackedByteArray([0xEF, 0xBB, 0xBF])
-	f.store_buffer(bom)
-	f.store_Buffer_or_string(csv) if f.has_method("store_Buffer_or_string") else f.store_buffer(csv.to_utf8_buffer())
+	f.store_buffer(PackedByteArray([0xEF, 0xBB, 0xBF])) # UTF-8 BOM，Excel 才能正确识别中文
+	f.store_buffer(csv.to_utf8_buffer())
 	f.close()
 	return {"ok": true, "error": ""}
 
 static func _build_archetype_name_lookup(archetypes: Array) -> Dictionary:
 	var map: Dictionary = {}
-	if archetypes == null:
-		return map
 	for a in archetypes:
 		if a == null or not (a is GDArchetypeRes):
 			continue
@@ -88,7 +84,7 @@ static func _build_archetype_name_lookup(archetypes: Array) -> Dictionary:
 	return map
 
 static func _format_attribute_overrides(overrides: Array) -> String:
-	if overrides == null or overrides.is_empty():
+	if overrides.is_empty():
 		return ""
 	var parts: PackedStringArray = PackedStringArray()
 	for ov in overrides:
@@ -105,7 +101,7 @@ static func _format_override_value(ov: GDPlacementData.PlacementAttributeOverrid
 		GDCoreTypes.KeywordValueType.FLOAT:
 			return _format_float(ov.float_value)
 		GDCoreTypes.KeywordValueType.STRING:
-			return ov.string_value if ov.string_value != null else ""
+			return ov.string_value
 		GDCoreTypes.KeywordValueType.BOOL:
 			return "true" if ov.bool_value else "false"
 		_:
@@ -117,8 +113,6 @@ static func _format_float(val: float) -> String:
 	return "%.6f" % val
 
 static func escape_csv_field(val: String) -> String:
-	if val == null or val.is_empty():
-		return ""
 	if val.contains(",") or val.contains("\"") or val.contains("\r") or val.contains("\n"):
 		return "\"%s\"" % val.replace("\"", "\"\"")
 	return val

@@ -2,105 +2,134 @@
 class_name GdesignerToolsMainDock
 extends VBoxContainer
 
-## GdesignerTools 主工作台（集成四大编辑器 + 原子创建器 + 统一 CLI 控制台）
-## 页签：
-##   0. 关卡编辑器 (Level Editor)
-##   1. 演员编辑器 (Actor Editor)
-##   2. 技能编辑器 (Skill Editor)
-##   3. 新手引导编辑器 (Guide Editor)
-##   4. CLI 控制台 & 原子工具 (CLI Console & Atom Creator)
+## 工作台外壳：顶部页签、当前页面、底部状态栏、可收起的控制台。
 
-var level_editor: GDLevelEditorWindow = null
-var actor_editor: GDActorEditorWindow = null
-var skill_editor: GDSkillEditorWindow = null
-var guide_editor: GDGuideEditorWindow = null
-var cli_console: GDCliConsoleWindow = null
-var _tab_container: TabContainer = null
-var _atom_creator_win: GDCoreAtomEditorWidgets.AtomCreatorWindow = null
+const TAB_CONSOLE := 4
+const TITLES: PackedStringArray = ["关卡", "演员", "技能", "引导"]
+
+var level_editor: GDLevelPage = null
+var actor_editor: GDActorPage = null
+var skill_editor: GDSkillPage = null
+var guide_editor: GDGuidePage = null
+var cli_console: GDConsolePanel = null
+
+var _pages: Array[GDPage] = []
+var _tabs: TabBar = null
+var _page_host: Control = null
+var _status: Label = null
+
 
 func _init() -> void:
 	name = "GdesignerTools"
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_build_ui()
+	add_theme_constant_override("separation", GDEditorUi.GAP)
+	_build_header()
+	_build_pages()
+	_build_footer()
+	# 只设可见性。页面的 activate 会加载资产，要等窗口真正打开时再做。
+	_pages[0].visible = true
 
+
+var current_page: GDPage:
+	get:
+		return _pages[_tabs.current_tab]
+
+
+## tab_index 超出页面范围时打开控制台。
 func switch_to_tab(tab_index: int) -> void:
-	if _tab_container != null and tab_index >= 0 and tab_index < _tab_container.get_tab_count():
-		_tab_container.current_tab = tab_index
+	if tab_index >= _pages.size():
+		_set_console_open(true)
+	else:
+		_tabs.current_tab = clampi(tab_index, 0, _pages.size() - 1)
+		_show_page(_tabs.current_tab)
 
-func _build_ui() -> void:
-	add_theme_constant_override("separation", 8)
 
+func activate_current() -> void:
+	current_page.activate()
+
+
+func save_all() -> void:
+	for page in _pages:
+		page.save_all()
+
+
+func unsaved_titles() -> PackedStringArray:
+	var titles := PackedStringArray()
+	for page in _pages:
+		titles.append_array(page.unsaved_titles())
+	return titles
+
+
+func _build_header() -> void:
 	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 10)
 	add_child(header)
+	_tabs = TabBar.new()
+	_tabs.clip_tabs = false
+	for title in TITLES:
+		_tabs.add_tab(title)
+	_tabs.tab_changed.connect(_show_page)
+	header.add_child(_tabs)
+	header.add_child(GDEditorUi.spacer())
+	header.add_child(GDEditorUi.tool_button(&"Terminal", "控制台", func() -> void: _set_console_open(not cli_console.visible), GDEditorUi.key(KEY_QUOTELEFT, true)))
+	header.add_child(GDEditorUi.menu_button("", &"GuiTabMenuHl", "更多", [
+		{"text": "新建原子…", "do": func() -> void: GDAtomCreatorDialog.open(self, _on_atom_result)},
+		{"text": "保存全部", "do": save_all, "shortcut": GDEditorUi.key(KEY_S, true, true)},
+	]))
 
-	var brand_box := VBoxContainer.new()
-	brand_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	brand_box.add_theme_constant_override("separation", 0)
-	header.add_child(brand_box)
 
-	var brand := Label.new()
-	brand.text = "GdesignerTools"
-	brand.add_theme_font_size_override("font_size", 16)
-	brand_box.add_child(brand)
+func _build_pages() -> void:
+	level_editor = GDLevelPage.new()
+	actor_editor = GDActorPage.new()
+	skill_editor = GDSkillPage.new()
+	guide_editor = GDGuidePage.new()
+	_pages = [level_editor, actor_editor, skill_editor, guide_editor]
+	_page_host = VBoxContainer.new()
+	_page_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	add_child(_page_host)
+	for page in _pages:
+		page.visible = false
+		page.status_changed.connect(_show_status)
+		page.document_state_changed.connect(_refresh_tab_titles)
+		_page_host.add_child(page)
 
-	var subtitle := GDEditorUi.muted("关卡、演员、技能、引导。关卡原型可以拖进旁边的 3D / 2D 视口。")
-	brand_box.add_child(subtitle)
 
-	var atom_btn := Button.new()
-	atom_btn.text = "新建原子"
-	atom_btn.tooltip_text = "创建一个原子模板"
-	GDEditorUi.style_button(atom_btn, "primary")
-	atom_btn.pressed.connect(func() -> void:
-		if _atom_creator_win == null:
-			_atom_creator_win = GDCoreAtomEditorWidgets.AtomCreatorWindow.new()
-			add_child(_atom_creator_win)
-		_atom_creator_win.popup_centered()
-	)
-	header.add_child(atom_btn)
+func _build_footer() -> void:
+	cli_console = GDConsolePanel.new()
+	cli_console.visible = false
+	cli_console.context_provider = func(command: String) -> PackedStringArray: return current_page.cli_context(command)
+	cli_console.close_requested.connect(func() -> void: _set_console_open(false))
+	add_child(cli_console)
+	_status = GDEditorUi.muted_label("")
+	_status.clip_text = true
+	_status.custom_minimum_size.x = 1
+	_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_child(_status)
 
-	_tab_container = TabContainer.new()
-	_tab_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_tab_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_child(_tab_container)
 
-	level_editor = GDLevelEditorWindow.new()
-	level_editor.name = "关卡"
-	_tab_container.add_child(level_editor)
+func _show_page(index: int) -> void:
+	for i in range(_pages.size()):
+		_pages[i].visible = i == index
+	_pages[index].activate()
 
-	actor_editor = GDActorEditorWindow.new()
-	actor_editor.name = "演员"
-	_tab_container.add_child(actor_editor)
 
-	skill_editor = GDSkillEditorWindow.new()
-	skill_editor.name = "技能"
-	_tab_container.add_child(skill_editor)
+func _set_console_open(open: bool) -> void:
+	cli_console.visible = open
+	if open:
+		cli_console.focus_input()
 
-	guide_editor = GDGuideEditorWindow.new()
-	guide_editor.name = "引导"
-	_tab_container.add_child(guide_editor)
 
-	cli_console = GDCliConsoleWindow.new(Callable(self, "dispatch_unified_cli"))
-	cli_console.name = "控制台"
-	_tab_container.add_child(cli_console)
+func _show_status(text: String, tone: StringName) -> void:
+	_status.text = text
+	_status.add_theme_color_override("font_color", GDEditorUi.tone(tone))
 
-	_tab_container.clip_contents = true
 
-static func dispatch_unified_cli(command_line: String) -> String:
-	var parts := GDCliRoot.split_command_line(command_line)
-	if parts.is_empty():
-		return JSON.stringify({"ok": false, "code": "BAD_ARG", "message": "empty command"})
-	var cmd := parts[0]
-	var args: Array = []
-	for i in range(1, parts.size()):
-		args.append(parts[i])
+func _refresh_tab_titles() -> void:
+	if _tabs == null:
+		return
+	for i in range(_pages.size()):
+		_tabs.set_tab_title(i, "%s ●" % TITLES[i] if _pages[i].is_dirty() else TITLES[i])
 
-	if cmd.begins_with("keywords.") or cmd.begins_with("layout.") or cmd.begins_with("scaffold.") or cmd.begins_with("sceneeditor."):
-		return GDSceneEditorCli.run(cmd, args)
-	if cmd.begins_with("skill."):
-		return GDSkillForgeAndCli.run_cli(cmd, args)
-	if cmd.begins_with("guide."):
-		return GDGuideEditingAndCli.GuideCli.run(cmd, args)
-	var core_res := GDCliRoot.execute(parts)
-	return core_res.to_json_line()
+
+func _on_atom_result(message: String, tone: StringName) -> void:
+	_show_status(message, tone)

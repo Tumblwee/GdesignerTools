@@ -130,17 +130,17 @@ class SkillRunner extends RefCounted:
 
 	static func build_dispatch_order(p_skill: GDSkillRes) -> Array[GDSkillClips.SkillClip]:
 		var result: Array[GDSkillClips.SkillClip] = []
-		if p_skill == null or p_skill.groups == null:
+		if p_skill == null:
 			return result
 		var entries: Array[Dictionary] = []
 		var global_track_idx := 0
 		for g in range(p_skill.groups.size()):
 			var grp = p_skill.groups[g]
-			if grp == null or grp.tracks == null:
+			if grp == null:
 				continue
 			for t in range(grp.tracks.size()):
 				var trk = grp.tracks[t]
-				if trk != null and trk.clips != null:
+				if trk != null:
 					for c in range(trk.clips.size()):
 						var clip = trk.clips[c]
 						if clip != null:
@@ -533,7 +533,7 @@ class AppliedModifierHandle extends RefCounted:
 
 
 class ActiveEffect extends RefCounted:
-	var effect: GDSkillTypes.GameplayEffectRes = null
+	var effect: GDGameplayEffectRes = null
 	var owner_id: int = 0
 	var source_caster_id: int = 0
 	var remaining_ms: float = 0.0
@@ -541,7 +541,7 @@ class ActiveEffect extends RefCounted:
 	var handles: Array[AppliedModifierHandle] = []
 
 	func _init(
-		p_eff: GDSkillTypes.GameplayEffectRes,
+		p_eff: GDGameplayEffectRes,
 		p_owner: int,
 		p_caster: int,
 		p_rem_ms: float,
@@ -574,7 +574,7 @@ class GameplayEffectApplier extends RefCounted:
 	func register_attribute_set(owner_id: int, attr_set: GDAttributeSystem.AttributeSet) -> void:
 		_attribute_sets[owner_id] = attr_set
 
-	func try_apply(owner_id: int, source_caster_id: int, effect: GDSkillTypes.GameplayEffectRes) -> bool:
+	func try_apply(owner_id: int, source_caster_id: int, effect: GDGameplayEffectRes) -> bool:
 		if effect == null or not _attribute_sets.has(owner_id):
 			return false
 		var set_obj: GDAttributeSystem.AttributeSet = _attribute_sets[owner_id]
@@ -625,10 +625,10 @@ class GameplayEffectApplier extends RefCounted:
 			return
 		var d := evt as Dictionary
 		var eff = d.get("effect", null)
-		if eff is GDSkillTypes.GameplayEffectRes:
+		if eff is GDGameplayEffectRes:
 			try_apply(int(d.get("owner_id", 0)), 0, eff)
 
-	func _apply_instant(set_obj: GDAttributeSystem.AttributeSet, effect: GDSkillTypes.GameplayEffectRes) -> void:
+	func _apply_instant(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes) -> void:
 		for m in effect.modifiers:
 			if m == null:
 				continue
@@ -644,7 +644,7 @@ class GameplayEffectApplier extends RefCounted:
 				GDSkillTypes.ModifierOp.OVERRIDE:
 					set_obj.set_base(kind, m.magnitude, "effect-applied")
 
-	func _apply_durational_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDSkillTypes.GameplayEffectRes, active: ActiveEffect) -> void:
+	func _apply_durational_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes, active: ActiveEffect) -> void:
 		for m in effect.modifiers:
 			if m == null:
 				continue
@@ -660,7 +660,7 @@ class GameplayEffectApplier extends RefCounted:
 					set_obj.add_modifier(kind, 0.0, m.magnitude, "effect-applied")
 					active.handles.append(AppliedModifierHandle.new(kind, m.op, m.magnitude))
 
-	func _apply_periodic_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDSkillTypes.GameplayEffectRes) -> void:
+	func _apply_periodic_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes) -> void:
 		for m in effect.modifiers:
 			if m != null and m.op == GDSkillTypes.ModifierOp.ADD:
 				var mapped := GDSkillTypes.try_map_attribute_name(m.attribute_name)

@@ -77,7 +77,7 @@ class GuideAtom extends Resource:
 		exit_on_condition_fail = p_cond_fail
 
 	func set_display_name(p_name: String) -> void:
-		display_name = p_name if p_name != null else ""
+		display_name = p_name
 
 	func assign_id(p_id: int) -> void:
 		id = p_id
@@ -112,6 +112,8 @@ class GuideAtom extends Resource:
 class MissingAtom extends GuideAtom:
 	@export var type_name: String = ""
 	@export var reference_id: int = 0
+	## 加载时遇到的未知类型原子的原始编码数据；保存时原样写回，避免丢数据。
+	@export var raw_data: Dictionary = {}
 	var _dynamic_ports: Array[GDGuideData.GuidePort] = [GDGuideData.GuidePorts.exec_in()]
 
 	func get_atom_id() -> String: return "io.guide.missing"
@@ -134,20 +136,19 @@ class MissingAtom extends GuideAtom:
 		atom.assign_id(node_id)
 		atom.assign_editor_position(pos)
 		atom.set_display_name(p_display_name)
-		var pts: Array[GDGuideData.GuidePort] = [GDGuideData.GuidePorts.exec_in()]
-		if out_ports != null:
-			for k in out_ports:
-				var kind := int(k)
-				if GDGuideData.GuidePorts.is_output(kind):
-					var exists := false
-					for ep in pts:
-						if ep.kind == kind:
-							exists = true
-							break
-					if not exists:
-						pts.append(GDGuideData.GuidePort.new(kind, false))
-		atom._dynamic_ports = pts
+		atom.set_out_ports(out_ports)
 		return atom
+
+	## 输入口 + 去重后的输出口（缺失类型无法自报端口，由连线反推）。
+	func set_out_ports(out_ports: Array) -> void:
+		var pts: Array[GDGuideData.GuidePort] = [GDGuideData.GuidePorts.exec_in()]
+		var seen := {}
+		for k in out_ports:
+			var kind := int(k)
+			if GDGuideData.GuidePorts.is_output(kind) and not seen.has(kind):
+				seen[kind] = true
+				pts.append(GDGuideData.GuidePort.new(kind, false))
+		_dynamic_ports = pts
 
 	func enter(_ctx: RefCounted) -> GDGuideData.GuideSignal:
 		return GDGuideData.GuideSignal.fail("节点类型缺失：" + type_name)
@@ -177,10 +178,9 @@ class EntryAtom extends GuideAtom:
 
 	func set_conditions(vals: Array) -> void:
 		conditions.clear()
-		if vals != null:
-			for v in vals:
-				if v is GDGuideData.GuideConditionExpr:
-					conditions.append(v)
+		for v in vals:
+			if v is GDGuideData.GuideConditionExpr:
+				conditions.append(v)
 
 	func enter(_ctx: RefCounted) -> GDGuideData.GuideSignal:
 		return GDGuideData.GuideSignal.succeed()
@@ -240,10 +240,9 @@ class BranchAtom extends GuideAtom:
 
 	func set_conditions(vals: Array) -> void:
 		conditions.clear()
-		if vals != null:
-			for v in vals:
-				if v is GDGuideData.GuideConditionExpr:
-					conditions.append(v)
+		for v in vals:
+			if v is GDGuideData.GuideConditionExpr:
+				conditions.append(v)
 
 	func set_blackboard_equals(p_key: String, p_val: String) -> void:
 		source = GDGuideData.GuideBranchSource.BLACKBOARD_EQUALS
@@ -318,8 +317,8 @@ class NarrationAtom extends GuideAtom:
 		return text.substr(0, 18) if text != null else ""
 
 	func set_text(p_text: String, p_speaker: String = "") -> void:
-		text = p_text if p_text != null else ""
-		speaker = p_speaker if p_speaker != null else ""
+		text = p_text
+		speaker = p_speaker
 
 	func set_auto_advance(seconds: float) -> void:
 		auto_advance_sec = maxf(0.0, seconds)
@@ -340,7 +339,7 @@ class NarrationAtom extends GuideAtom:
 		return GDGuideData.GuideSignal.running("等点击继续")
 
 	func validate(vctx: RefCounted) -> void:
-		if text == null or text.is_empty():
+		if text.is_empty():
 			vctx.call("add_warning", "narration.no_text", "旁白没有文案")
 
 
@@ -385,10 +384,9 @@ class LockWaitAtom extends GuideAtom:
 	func set_conditions(vals: Array) -> void:
 		condition = GDGuideData.GuideWaitCondition.CONDITIONS
 		conditions.clear()
-		if vals != null:
-			for v in vals:
-				if v is GDGuideData.GuideConditionExpr:
-					conditions.append(v)
+		for v in vals:
+			if v is GDGuideData.GuideConditionExpr:
+				conditions.append(v)
 
 	func set_text(p_text: String) -> void:
 		text = p_text
@@ -500,10 +498,9 @@ class ConditionWaitAtom extends GuideAtom:
 
 	func configure(p_conditions: Array, p_timeout: float = 0.0, p_interval: float = 0.1) -> void:
 		conditions.clear()
-		if p_conditions != null:
-			for c in p_conditions:
-				if c is GDGuideData.GuideConditionExpr:
-					conditions.append(c)
+		for c in p_conditions:
+			if c is GDGuideData.GuideConditionExpr:
+				conditions.append(c)
 		raw_timeout_sec = p_timeout
 		interval_sec = maxf(0.0, p_interval)
 
@@ -651,8 +648,8 @@ class GuideTargetAtom extends GuideAtom:
 		target = p_target if p_target != null else GDGuideData.GuideTargetRef.new()
 
 	func set_text(p_text: String, p_speaker: String = "") -> void:
-		text = p_text if p_text != null else ""
-		speaker = p_speaker if p_speaker != null else ""
+		text = p_text
+		speaker = p_speaker
 		show_text = not text.strip_edges().is_empty()
 
 	func set_show_text(p_show: bool) -> void:
@@ -828,14 +825,14 @@ class GuideCheckpointAtom extends GuideAtom:
 	func _get_summary() -> String: return checkpoint
 
 	func configure(p_checkpoint: String) -> void:
-		checkpoint = p_checkpoint if p_checkpoint != null else ""
+		checkpoint = p_checkpoint
 
 	func enter(ctx: RefCounted) -> GDGuideData.GuideSignal:
 		ctx.call("record_checkpoint", checkpoint)
 		return GDGuideData.GuideSignal.succeed()
 
 	func validate(vctx: RefCounted) -> void:
-		if checkpoint == null or checkpoint.strip_edges().is_empty():
+		if checkpoint.strip_edges().is_empty():
 			vctx.call("add_error", "checkpoint.empty", "检查点不能为空")
 
 

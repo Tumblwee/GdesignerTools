@@ -7,13 +7,15 @@ extends SceneTree
 ##   3. Actor Editor（ActorLibrary 1000+ 分配器、重命名/复制/Override 复写防环与重绑、ActorEditorWindow UI 实例化）
 ##   4. Skill Editor（SkillIdentity 解析与规范化、15 种 Clip 与 4 种 Trajectory、SkillRunner 同刻 tie-break 排序、SkillRuntimeService 消耗/冷却/打断/伤害/闪现、SkillTimelineEditorMath、SkillAssetValidator、SkillForge & SkillCli 8 条命令往返、SkillEditorWindow UI 实例化）
 ##   5. Guide Editor（GuideProgressStore 同构编码往返、GuideConditionEvaluator、15 种内置原子、GuideGraphValidator 无等待环/孤立/端口/子图递归校验、GuideSchemaMigrator v1->v2、GuideRunner 执行/超时/Stall/断点/单步/输入水位线、GuideTriggerSystem、GuideGraphLayout、GuideCli、GuideEditorWindow UI 实例化）
-##   6. 主插件与 GdesignerToolsMainDock 完整挂载运行
+##   6. 持久化往返（GDDataCodec；技能 / 引导图 / 关卡 save -> load 深比较，并验证重载后仍能运行）
+##   7. 统一 CLI（GdesignerToolsCli / 参数解析 / 别名）、GDArchetypeOps、关卡原型重命名、场景对齐、CSV 落盘
+##   8. 主插件与 GdesignerToolsMainDock 完整挂载运行
 
 var _pass_count: int = 0
 var _fail_count: int = 0
 var _frames_waited: int = 0
 
-func _init() -> void:
+func _initialize() -> void:
 	print("============================================================")
 	print("  GdesignerTools Automated Verification Suite (Godot 4.7.2)")
 	print("============================================================")
@@ -24,27 +26,46 @@ func _init() -> void:
 	_test_actor_editor()
 	_test_skill_editor()
 	_test_guide_editor()
+	_test_persistence_round_trips()
+	_test_cli_and_editor_services()
 	_test_ui_windows_and_main_dock()
 
-	GDSkillForgeAndCli._in_memory_skills.clear()
+	GDSkillForge._in_memory_skills.clear()
 	GDCliRoot._registry.clear()
-	GDCliRoot._builtins_registered = false
 	GDCoreServices.shutdown_for_tests()
 
-	print("------------------------------------------------------------")
-	print("  TOTAL PASSED: %d   TOTAL FAILED: %d" % [_pass_count, _fail_count])
-	print("============================================================")
+func _test_form_in_tree() -> void:
+	var form := GDForm.new()
+	get_root().add_child(form)
+	var model := {"name": "甲", "count": 1}
+	_check(form.begin("key"), "GDForm builds on a new key")
+	var edit: LineEdit = form.text("名称", func() -> String: return model["name"], func(v: String) -> void: model["name"] = v)
+	var spin := form.integer("数量", func() -> int: return model["count"], func(v: int) -> void: model["count"] = v)
+	var commits: Array[String] = []
+	form.committed.connect(func(label: String, _merge: bool) -> void: commits.append(label))
+	spin.value = 5
+	_check(model["count"] == 5 and commits.size() == 1 and commits[0] == "数量", "GDForm writes and commits numeric edits")
+	edit.text = "乙"
+	edit.text_submitted.emit("乙")
+	_check(model["name"] == "乙" and commits.size() == 2, "GDForm commits text on Enter")
+	model["name"] = "丙"
+	_check(not form.begin("key") and edit.text == "丙", "GDForm re-reads the model without rebuilding on the same key")
+	form.free()
+
 
 func _process(_delta: float) -> bool:
 	_frames_waited += 1
+	if _frames_waited == 1:
+		_test_form_in_tree()
 	if _frames_waited >= 2:
-		GDGuideEditingAndCli._in_memory_graphs.clear()
+		print("------------------------------------------------------------")
+		print("  TOTAL PASSED: %d   TOTAL FAILED: %d" % [_pass_count, _fail_count])
+		print("============================================================")
+		GDGuideEditing._in_memory_graphs.clear()
 		GDGuideRunnerSystem.GuideBreakpoints._by_graph.clear()
 		GDGuideRunnerSystem.GuideDebugRegistry._sessions.clear()
-		GDSkillForgeAndCli._in_memory_skills.clear()
+		GDSkillForge._in_memory_skills.clear()
 		GDCliRoot._registry.clear()
-		GDCliRoot._builtins_registered = false
-		GDSceneEditorL10n._on_language_changed_callbacks.clear()
 		GDGameLogger._history.clear()
 		GDCoreServices.shutdown_for_tests()
 		quit(0 if _fail_count == 0 else 1)
@@ -52,7 +73,7 @@ func _process(_delta: float) -> bool:
 	return false
 
 func _test_all_scripts_compile() -> void:
-	print("[0/6] Verifying All GdesignerTools GDScript Files Compile...")
+	print("[0/8] Verifying All GdesignerTools GDScript Files Compile...")
 	var scripts: Array[String] = []
 	_collect_gd_files("res://addons/gdesigner_tools", scripts)
 	_check(scripts.size() >= 38, "Found %d GDScript files in res://addons/gdesigner_tools" % scripts.size())
@@ -87,7 +108,7 @@ func _check(cond: bool, desc: String) -> void:
 # ─────────────────────── 1. Core Layer Tests ───────────────────────
 
 func _test_core_layer() -> void:
-	print("[1/6] Testing Core Layer...")
+	print("[1/8] Testing Core Layer...")
 	GDCoreServices.reset_for_tests()
 
 	# EventBus & ServiceLocator
@@ -173,7 +194,7 @@ func _test_core_layer() -> void:
 # ─────────────────────── 2. Level Editor Tests ───────────────────────
 
 func _test_level_editor() -> void:
-	print("[2/6] Testing Level Editor...")
+	print("[2/8] Testing Level Editor...")
 	var layout := GDLevelSceneRes.new()
 	layout.display_name = "TestCity"
 
@@ -246,7 +267,7 @@ func _test_level_editor() -> void:
 # ─────────────────────── 3. Actor Editor Tests ───────────────────────
 
 func _test_actor_editor() -> void:
-	print("[3/6] Testing Actor Editor...")
+	print("[3/8] Testing Actor Editor...")
 	var lib := GDActorLibraryRes.new()
 	lib.resource_name = "ActorLibrary_Sample"
 	lib.display_name = "通用演员库"
@@ -269,7 +290,7 @@ func _test_actor_editor() -> void:
 	var ov_res := GDActorEditorServices.ActorArchetypeOverrideService.try_create(a1, lib, "Unit_Override", "示例单位_复写")
 	var ov_arch: GDActorLibraryRes.ActorArchetypeRes = ov_res["created"]
 	_check(bool(ov_res.get("ok", false)) and ov_arch.is_override_archetype and ov_arch.override_base_archetype == a1, "Actor override creation")
-	_check(GDActorEditorServices.ActorArchetypeOverrideService.would_form_cycle(a1, ov_arch), "Actor override cycle detection prevents base->override cycle")
+	_check(GDArchetypeOps.would_form_cycle(a1, ov_arch), "Actor override cycle detection prevents base->override cycle")
 
 	# Rename
 	var ren_res := GDActorEditorServices.ActorArchetypeRenameService.try_rename(a1, lib, "Guide", "示例向导")
@@ -278,7 +299,7 @@ func _test_actor_editor() -> void:
 # ─────────────────────── 4. Skill Editor Tests ───────────────────────
 
 func _test_skill_editor() -> void:
-	print("[4/6] Testing Skill Editor...")
+	print("[4/8] Testing Skill Editor...")
 
 	# SkillIdentity
 	_check(GDSkillTypes.SkillIdentity.to_asset_name("Explore", 904) == "Skill_Explore_904", "SkillIdentity ToAssetName")
@@ -288,9 +309,9 @@ func _test_skill_editor() -> void:
 	_check(bool(p2["ok"]) and str(p2["name"]) == "Explore" and int(p2["id"]) == 904, "SkillIdentity parse legacy compact format")
 
 	# All 15 Clip types & 4 Trajectories
-	_check(GDSkillForgeAndCli.ALL_CLIP_TYPES.size() == 15, "SkillForge locks 15 clip types")
-	for sn in GDSkillForgeAndCli.ALL_CLIP_TYPES:
-		var inst := GDSkillForgeAndCli.create_clip_instance(sn)
+	_check(GDSkillForge.clip_types().size() == 15, "SkillForge locks 15 clip types")
+	for sn in GDSkillForge.clip_types():
+		var inst := GDSkillForge.create_clip_instance(sn)
 		_check(inst != null and inst.get_clip_short_name() == sn, "Clip instantiation for " + sn)
 
 	var parabola := GDSkillClips.ParabolaTrajectory.new()
@@ -319,12 +340,12 @@ func _test_skill_editor() -> void:
 	_check(order.size() == 2 and order[0] == c_dmg and order[1] == c_vfx, "SkillRunner BuildDispatchOrder places logic clip before presentation clip at same StartMs")
 
 	# SkillTimelineEditorMath
-	_check(GDSkillEditorMathAndValidator.SkillTimelineEditorMath.clamp_start(900, 300, 1000) == 700, "SkillTimelineEditorMath.ClampStart")
-	_check(GDSkillEditorMathAndValidator.SkillTimelineEditorMath.clamp_duration(700, 500, 1000, 50) == 300, "SkillTimelineEditorMath.ClampDuration")
-	_check(GDSkillEditorMathAndValidator.SkillTimelineEditorMath.nearest_fired_clip_start(order, 250) == 200, "SkillTimelineEditorMath.NearestFiredClipStart")
+	_check(GDSkillTimelineMath.clamp_start(900, 300, 1000) == 700, "SkillTimelineEditorMath.ClampStart")
+	_check(GDSkillTimelineMath.clamp_duration(700, 500, 1000, 50) == 300, "SkillTimelineEditorMath.ClampDuration")
+	_check(GDSkillTimelineMath.nearest_fired_clip_start(order, 250) == 200, "SkillTimelineEditorMath.NearestFiredClipStart")
 
 	# SkillCli roundtrip (create + describe + validate + clip-types)
-	var ct_json := JSON.parse_string(GDSkillForgeAndCli.run_cli("skill.clip-types", []))
+	var ct_json := JSON.parse_string(GDSkillCli.run("skill.clip-types", []))
 	_check(ct_json is Dictionary and bool(ct_json["ok"]) and int(ct_json["count"]) == 15, "SkillCli skill.clip-types returns 15 types")
 
 	var skill_root := "res://game_res/sample/_cli_tmp"
@@ -343,10 +364,10 @@ func _test_skill_editor() -> void:
 			{"id": "dmg0", "type": "DealDamage", "group": "Impact", "startMs": 500, "durationMs": 0, "fields": {"baseDamage": 120, "coefficient": 1.5}},
 		],
 	}
-	var cr_json := JSON.parse_string(GDSkillForgeAndCli.run_cli("skill.create", ["--inline", JSON.stringify(create_spec), "--project-path", skill_root]))
+	var cr_json := JSON.parse_string(GDSkillCli.run("skill.create", ["--inline", JSON.stringify(create_spec), "--project-path", skill_root]))
 	_check(cr_json is Dictionary and bool(cr_json["ok"]), "SkillCli skill.create Pulse_904")
 
-	var desc_json := JSON.parse_string(GDSkillForgeAndCli.run_cli("skill.describe", ["--skill", "Pulse_904", "--project-path", skill_root]))
+	var desc_json := JSON.parse_string(GDSkillCli.run("skill.describe", ["--skill", "Pulse_904", "--project-path", skill_root]))
 	_check(desc_json is Dictionary and bool(desc_json["ok"]), "SkillCli skill.describe Pulse_904")
 
 	# SkillRuntimeService cast, cost, cooldown, damage
@@ -361,7 +382,7 @@ func _test_skill_editor() -> void:
 	svc.register_attribute_set(101, caster_set)
 	svc.register_attribute_set(202, target_set)
 
-	var cast_skill := GDSkillForgeAndCli.find_skill_by_query("Pulse_904", skill_root)
+	var cast_skill := GDSkillForge.find_skill_by_query("Pulse_904", skill_root)
 	_check(svc.try_cast(101, 202, cast_skill), "SkillRuntimeService first try_cast succeeds")
 	_check(is_equal_approx(caster_set.get_current(GDSkillTypes.AttributeKind.MANA), 25.0), "SkillRuntimeService deducts 25 Mana cost")
 	_check(not svc.try_cast(101, 202, cast_skill), "SkillRuntimeService blocks recast while on cooldown")
@@ -371,11 +392,11 @@ func _test_skill_editor() -> void:
 	# GameplayEffectApplier durational + periodic + expiry revert
 	var applier := GDSkillRuntime.GameplayEffectApplier.new(bus)
 	applier.register_attribute_set(202, target_set)
-	var dot_eff := GDSkillTypes.GameplayEffectRes.new()
+	var dot_eff := GDGameplayEffectRes.new()
 	dot_eff.duration = 1.0 # 1000ms
 	dot_eff.period = 0.5   # 500ms
 	dot_eff.modifiers = [
-		GDSkillTypes.GameplayEffectModifier.new("MoveSpeed", GDSkillTypes.ModifierOp.MULTIPLY, -0.3),
+		GDGameplayEffectModifierRes.new("MoveSpeed", GDSkillTypes.ModifierOp.MULTIPLY, -0.3),
 	]
 	target_set.set_base(GDSkillTypes.AttributeKind.MOVE_SPEED, 10.0)
 	_check(applier.try_apply(202, 101, dot_eff), "GameplayEffectApplier applies durational slow effect")
@@ -386,21 +407,21 @@ func _test_skill_editor() -> void:
 	svc.dispose()
 
 	# SkillDoctor YAML cross-validation
-	var doc_issues := GDSkillEditorMathAndValidator.SkillDoctor.doctor_yaml_text(
+	var doc_issues := GDSkillValidation.SkillDoctor.doctor_yaml_text(
 		PackedStringArray(["version: 1", "tools:", "  - name: missing.cmd", "    role: G", "    required: true"]),
 		{"skill.list": true}
 	)
 	_check(doc_issues.size() == 1 and str(doc_issues[0]["code"]) == "D3", "SkillDoctor catches D3 unregistered required CLI tool")
 	_wipe_res_dir(skill_root)
-	GDSkillForgeAndCli._in_memory_skills.erase("Skill_Pulse_904")
+	GDSkillForge._in_memory_skills.erase("Skill_Pulse_904")
 
 # ─────────────────────── 5. Guide Editor Tests ───────────────────────
 
 func _test_guide_editor() -> void:
-	print("[5/6] Testing Guide Editor...")
+	print("[5/8] Testing Guide Editor...")
 
 	# GuideMemoryProgressStore encode/decode roundtrip (c=1;r=2:42;s=3;p=2:welcome_read)
-	var store := GDGuideHostAndConditions.GuideMemoryProgressStore.new()
+	var store := GDGuideServices.GuideMemoryProgressStore.new()
 	store.bind("player_1001")
 	store.mark_completed(1)
 	store.set_resume_node_id(2, 42)
@@ -409,7 +430,7 @@ func _test_guide_editor() -> void:
 	var encoded := store.encode()
 	_check(encoded == "c=1;r=2:42;s=3;p=2:welcome_read", "GuideMemoryProgressStore exact format: " + encoded)
 
-	var store2 := GDGuideHostAndConditions.GuideMemoryProgressStore.new()
+	var store2 := GDGuideServices.GuideMemoryProgressStore.new()
 	store2.bind("player_1001")
 	store2.decode(encoded)
 	_check(
@@ -418,7 +439,7 @@ func _test_guide_editor() -> void:
 	)
 
 	# GuideGraphValidator: immediate cycle detection & unconnected required port
-	var bad_graph := GDGuideGraphAndValidator.GuideGraphRes.new()
+	var bad_graph := GDGuideGraphRes.new()
 	bad_graph.set_graph_id(100)
 	var entry := GDGuideAtoms.EntryAtom.new()
 	bad_graph.add_atom(entry, Vector2.ZERO)
@@ -433,16 +454,16 @@ func _test_guide_editor() -> void:
 	bad_graph.connect_nodes(entry.id, GDGuideData.GuidePortKind.EXEC_OUT, b1.id)
 	bad_graph.connect_nodes(b1.id, GDGuideData.GuidePortKind.EXEC_TRUE, b2.id)
 	bad_graph.connect_nodes(b2.id, GDGuideData.GuidePortKind.EXEC_TRUE, b1.id) # Immediate cycle!
-	var bad_rep := GDGuideGraphAndValidator.GuideGraphValidator.validate(bad_graph)
-	_check(bad_rep.contains(GDGuideGraphAndValidator.GuideGraphValidator.CODE_IMMEDIATE_CYCLE), "GuideGraphValidator catches immediate cycle")
+	var bad_rep := GDGuideValidation.GuideGraphValidator.validate(bad_graph)
+	_check(bad_rep.contains(GDGuideValidation.GuideGraphValidator.CODE_IMMEDIATE_CYCLE), "GuideGraphValidator catches immediate cycle")
 
 	# GuideSampleGraphs validation & execution via GuideRunner
-	var sample_graph := GDGuideGraphAndValidator.GuideGraphRes.new()
-	GDGuideEditingAndCli.GuideSampleGraphs.build_sample(sample_graph)
-	var sample_rep := GDGuideGraphAndValidator.GuideGraphValidator.validate(sample_graph)
+	var sample_graph := GDGuideGraphRes.new()
+	GDGuideSamples.build_sample(sample_graph)
+	var sample_rep := GDGuideValidation.GuideGraphValidator.validate(sample_graph)
 	_check(not sample_rep.has_errors, "GuideSampleGraphs.build_sample passes validation cleanly")
 
-	var host := GDGuideHostAndConditions.GuideHost.new()
+	var host := GDGuideServices.GuideHost.new()
 	host.set_predicate("sample_has_coin", true)
 	var runner := GDGuideRunnerSystem.GuideRunner.new(host)
 	_check(runner.try_start(sample_graph), "GuideRunner starts sample graph")
@@ -466,58 +487,367 @@ func _test_guide_editor() -> void:
 	)
 
 	# Strong <-> Weak conversion & Click capture
-	var conv_graph := GDGuideGraphAndValidator.GuideGraphRes.new()
+	var conv_graph := GDGuideGraphRes.new()
 	conv_graph.set_graph_id(777)
 	conv_graph.add_default_skeleton()
-	var captured := GDGuideEditingAndCli.GuideGraphEditing.capture_click(
+	var captured := GDGuideEditing.capture_click(
 		conv_graph, 1, GDGuideData.GuideTargetRef.ui("HomePanel", "BtnConfirm"), "确认按钮"
 	)
 	_check(captured is GDGuideAtoms.StrongGuideAtom and conv_graph.atoms.size() == 3, "GuideGraphEditing.capture_click inserts StrongGuideAtom")
-	var converted := GDGuideEditingAndCli.GuideGraphEditing.convert_guide(conv_graph, captured.id)
+	var converted := GDGuideEditing.convert_guide(conv_graph, captured.id)
 	_check(converted is GDGuideAtoms.WeakGuideAtom and converted.id == captured.id, "GuideGraphEditing.convert_guide converts Strong <-> Weak preserving id & edges")
 	runner.dispose()
 	host.dispose()
 
+# ─────────────────────── 6. Persistence Round-Trips ───────────────────────
+
+func _test_persistence_round_trips() -> void:
+	print("[6/8] Testing Persistence Round-Trips...")
+
+	# GDDataCodec: defaults omitted, unregistered resources kept native, unknown types reported
+	var codec := GDDataCodec.new([GDSkillRes, GDSkillClips])
+	_check(codec.encode(GDSkillClips.LinearTrajectory.new()) == {"$type": "LinearTrajectory"}, "GDDataCodec omits fields equal to the class default")
+	var bez := GDSkillClips.BezierTrajectory.new()
+	bez.configure(Vector3(1, 3, 2))
+	var bez_back = codec.decode(codec.encode(bez))
+	_check(bez_back is GDSkillClips.BezierTrajectory and bez_back.control_offset == Vector3(1, 3, 2), "GDDataCodec round-trips a registered inner-class Resource")
+	var tex := GradientTexture2D.new()
+	_check(codec.encode([tex])[0] == tex, "GDDataCodec keeps unregistered Resources (Texture2D) native")
+	var unknown_seen := {"type": ""}
+	codec.on_unknown = func(type_name: String, _data: Dictionary) -> Variant:
+		unknown_seen["type"] = type_name
+		return null
+	_check(codec.decode({"$type": "NoSuchClip"}) == null and unknown_seen["type"] == "NoSuchClip", "GDDataCodec routes unknown types to on_unknown")
+	var typed_back = codec.decode(codec.encode(_make_push_event_clip()))
+	_check(typed_back is GDSkillClips.PushEventClip and typed_back.events.size() == 2 and typed_back.events.get_typed_script() == GDSkillClips.SkillCustomEvent, "GDDataCodec fills typed Array properties through assign")
+
+	# Skill: several clip types incl. SpawnProjectile + Bezier, cost / cooldown / groups survive save -> load
+	var skill := _make_round_trip_skill()
+	var reloaded_skill := _save_and_reload(skill, "user://gdt_rt_skill.tres") as GDSkillRes
+	_check(reloaded_skill != null and reloaded_skill.groups.size() == 2, "Skill groups survive save -> load")
+	_check(reloaded_skill != null and _snapshot(reloaded_skill) == _snapshot(skill), "Skill deep-equals after save -> load (clips, trajectory, events, cost, cooldown)")
+	var projectile := _first_clip(reloaded_skill) as GDSkillClips.SpawnProjectileClip
+	_check(projectile != null and projectile.trajectory is GDSkillClips.BezierTrajectory and projectile.trajectory.control_offset == Vector3(1, 3, 2), "SpawnProjectile Bezier trajectory survives save -> load")
+	_check(reloaded_skill != null and is_equal_approx(reloaded_skill.cost.amount, 25.0) and reloaded_skill.cooldown.cd_group == "Skill_Orbit", "Skill cost / cooldown survive save -> load")
+	var dup := skill.duplicate() as GDSkillRes
+	_check(_snapshot(dup) == _snapshot(skill) and not dup.groups.is_empty() and dup.groups[0] != skill.groups[0], "Resource.duplicate deep-copies the codec-backed timeline")
+	_check(reloaded_skill != null and _cast_deals_damage(reloaded_skill), "Reloaded skill casts through SkillRuntimeService and deals 180 damage")
+
+	# Guide: sample graphs, conditions, Strong guide target survive save -> load and still run
+	var sample := GDGuideGraphRes.new()
+	GDGuideSamples.build_sample(sample)
+	var sample_back := _save_and_reload(sample, "user://gdt_rt_guide_sample.tres") as GDGuideGraphRes
+	_check(sample_back != null and sample_back.atoms.size() == sample.atoms.size() and sample_back.edges.size() == sample.edges.size(), "Guide sample graph keeps atoms and edges after save -> load")
+	_check(sample_back != null and _snapshot(sample_back) == _snapshot(sample), "Guide sample graph deep-equals after save -> load")
+	_check(sample_back != null and _run_sample_guide(sample_back), "Reloaded sample guide runs to completion via GuideRunner")
+
+	var cond := GDGuideGraphRes.new()
+	GDGuideSamples.build_condition_sample(cond)
+	var cond_back := _save_and_reload(cond, "user://gdt_rt_guide_cond.tres") as GDGuideGraphRes
+	var entry_back := cond_back.find_atom(cond_back.find_entry_id()) as GDGuideAtoms.EntryAtom if cond_back != null else null
+	_check(cond_back != null and _snapshot(cond_back) == _snapshot(cond), "Guide condition sample deep-equals after save -> load")
+	_check(entry_back != null and entry_back.trigger_event.key == "SampleStart" and entry_back.conditions.size() == 1 and entry_back.conditions[0].left.condition_id == "io.guide.sample_has_coin", "Entry trigger event and typed condition rows survive save -> load")
+	_check(cond_back != null and not GDGuideValidation.GuideGraphValidator.validate(cond_back).has_errors, "Reloaded condition sample still validates cleanly")
+
+	var strong_graph := GDGuideGraphRes.new()
+	strong_graph.set_graph_id(778)
+	strong_graph.add_default_skeleton()
+	var strong := GDGuideEditing.capture_click(strong_graph, 1, GDGuideData.GuideTargetRef.ui("HomePanel", "BtnConfirm"), "确认") as GDGuideAtoms.StrongGuideAtom
+	strong.click_mode = GDGuideData.GuideClickMode.CONSUME
+	var strong_back := _save_and_reload(strong_graph, "user://gdt_rt_guide_strong.tres") as GDGuideGraphRes
+	var strong_atom = strong_back.find_atom(strong.id) if strong_back != null else null
+	_check(strong_atom is GDGuideAtoms.StrongGuideAtom and strong_atom.target.panel == "HomePanel" and strong_atom.target.widget == "BtnConfirm" and strong_atom.click_mode == GDGuideData.GuideClickMode.CONSUME, "Strong guide target and click mode survive save -> load")
+
+	# Guide: unknown atom type -> MissingAtom, raw data written back unchanged
+	var data := sample.codec_data
+	(data["atoms"] as Array).append({"$type": "FutureAtom", "id": 99, "editor_position": Vector2(5, 5), "display_name": "未来节点", "future_field": 7})
+	(data["edges"] as Array).append({"$type": "GuideEdge", "from_id": 99, "to_id": 2})
+	var future := GDGuideGraphRes.new()
+	future.codec_data = data
+	var missing = future.find_atom(99)
+	_check(missing is GDGuideAtoms.MissingAtom and missing.type_name == "FutureAtom" and missing.has_port(GDGuideData.GuidePortKind.EXEC_OUT), "Unknown atom type decodes into MissingAtom with ports rebuilt from edges")
+	_check(GDGuideValidation.GuideGraphValidator.validate(future).contains(GDGuideValidation.GuideGraphValidator.CODE_MISSING_TYPE, 99), "Validator reports the missing atom type")
+	var future_back := _save_and_reload(future, "user://gdt_rt_guide_future.tres") as GDGuideGraphRes
+	var raw_back: Dictionary = {}
+	for a in (future_back.codec_data["atoms"] if future_back != null else []):
+		if a is Dictionary and a.get("id") == 99:
+			raw_back = a
+	_check(raw_back.get("$type") == "FutureAtom" and raw_back.get("future_field") == 7, "Unknown atom raw data is written back unchanged on save")
+
+	# Level: paths + camera poses survive save -> load; shipped sample still loads
+	var layout := _make_round_trip_layout()
+	var layout_back := _save_and_reload(layout, "user://gdt_rt_level.tres") as GDLevelSceneRes
+	_check(layout_back != null and layout_back.paths.size() == 1 and layout_back.camera_poses.size() == 1, "Level paths and camera poses survive save -> load")
+	_check(layout_back != null and _snapshot(layout_back) == _snapshot(layout), "Level deep-equals after save -> load (spline knots, overrides, camera bounds)")
+	var path_back: GDPathSystem.PathInstance = layout_back.paths.front() if layout_back != null and not layout_back.paths.is_empty() else null
+	_check(path_back != null and is_equal_approx(path_back.spline.get_length(), layout.paths[0].spline.get_length()) and path_back.closed, "Reloaded path still samples the same spline")
+	var sample_level := ResourceLoader.load("res://game_res/sample/level/LevelScene_Sample.tres", "", ResourceLoader.CACHE_MODE_IGNORE) as GDLevelSceneRes
+	_check(sample_level != null and sample_level.placements.size() == 2 and sample_level.archetypes.size() == 2, "Shipped LevelScene_Sample.tres still loads")
+
+	for f in ["gdt_rt_skill", "gdt_rt_guide_sample", "gdt_rt_guide_cond", "gdt_rt_guide_strong", "gdt_rt_guide_future", "gdt_rt_level"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path("user://%s.tres" % f))
+
+
+func _first_clip(sk: GDSkillRes) -> GDSkillClips.SkillClip:
+	if sk == null or sk.groups.is_empty() or sk.groups[0].tracks.is_empty() or sk.groups[0].tracks[0].clips.is_empty():
+		return null
+	return sk.groups[0].tracks[0].clips[0]
+
+
+func _save_and_reload(res: Resource, path: String) -> Resource:
+	if ResourceSaver.save(res, path) != OK:
+		return null
+	return ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+
+
+## Comparable plain-data view of a value: Resources become {script, stored + script-variable properties} recursively,
+## so the in-memory model (not only what was written to disk) is compared.
+func _snapshot(value: Variant) -> Variant:
+	if value is Array:
+		return value.map(_snapshot)
+	if value is Dictionary:
+		var out := {}
+		for k in value:
+			out[k] = _snapshot(value[k])
+		return out
+	if not (value is Resource):
+		return value
+	var script: Script = value.get_script()
+	var out := {"#script": script.resource_path if script != null else value.get_class()}
+	for prop in value.get_property_list():
+		var name: String = prop["name"]
+		if prop["usage"] & (PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_SCRIPT_VARIABLE) and not name.begins_with("resource_") and name != "script":
+			out[name] = _snapshot(value.get(name))
+	return out
+
+
+func _make_push_event_clip() -> GDSkillClips.PushEventClip:
+	var push := GDSkillClips.PushEventClip.new()
+	var events: Array[GDSkillClips.SkillCustomEvent] = []
+	for i in 2:
+		var ev := GDSkillClips.SkillCustomEvent.new()
+		ev.configure("Evt%d" % i, 1.5 * i, "s%d" % i, Vector3(i, 0, 1))
+		events.append(ev)
+	push.configure(events)
+	push.set_timing(300, 0)
+	return push
+
+
+func _make_round_trip_skill() -> GDSkillRes:
+	var sk := GDSkillRes.new()
+	sk.configure_header("Orbit", 905, "环绕", "往返测试")
+	sk.set_cost("Mana", 25.0)
+	sk.set_cooldown("Skill_Orbit", 4.0)
+	sk.set_duration(1200)
+	var cast := GDSkillRes.SkillTrackGroup.new("Cast")
+	var hitbox := GDSkillRes.SkillTrack.new(GDSkillTypes.SkillTrackKind.HITBOX)
+	var projectile := GDSkillClips.SpawnProjectileClip.new()
+	projectile.set_timing(100, 0)
+	projectile.configure(null, 22.0, GDSkillTypes.SkillProjectileDirectionKind.CASTER_FORWARD)
+	var bezier := GDSkillClips.BezierTrajectory.new()
+	bezier.configure(Vector3(1, 3, 2))
+	projectile.configure_trajectory(bezier, true)
+	projectile.configure_landing_offset(Vector3(0, 0.5, 0))
+	hitbox.add_clip(projectile)
+	cast.add_track(hitbox)
+	var vfx := GDSkillRes.SkillTrack.new(GDSkillTypes.SkillTrackKind.VFX)
+	var flash := GDSkillClips.HitFlashClip.new()
+	flash.configure(Color(0.2, 0.4, 0.6, 1.0), 0.4)
+	vfx.add_clip(flash)
+	vfx.add_clip(_make_push_event_clip())
+	cast.add_track(vfx)
+	sk.add_group(cast)
+	var impact := GDSkillRes.SkillTrackGroup.new("Impact")
+	var effect := GDSkillRes.SkillTrack.new(GDSkillTypes.SkillTrackKind.EFFECT)
+	var hit := GDSkillClips.CheckHitClip.new()
+	hit.set_timing(500, 0)
+	hit.configure(GDSkillTypes.SkillHitShapeKind.BOX, Vector3(2, 1, 3))
+	effect.add_clip(hit)
+	var dmg := GDSkillClips.DealDamageClip.new()
+	dmg.set_timing(500, 0)
+	dmg.configure(120, 1.5)
+	effect.add_clip(dmg)
+	impact.add_track(effect)
+	sk.add_group(impact)
+	return sk
+
+
+func _cast_deals_damage(sk: GDSkillRes) -> bool:
+	var bus := GDCoreServices.EventBus.new()
+	var svc := GDSkillRuntime.SkillRuntimeService.new(bus, func() -> float: return 10.0)
+	var caster := GDAttributeSystem.AttributeSet.new()
+	caster.set_base(GDSkillTypes.AttributeKind.MANA, 50.0)
+	caster.set_base(GDSkillTypes.AttributeKind.ATTACK_POWER, 40.0)
+	var target := GDAttributeSystem.AttributeSet.new()
+	target.set_base(GDSkillTypes.AttributeKind.HEALTH, 500.0)
+	svc.register_attribute_set(101, caster)
+	svc.register_attribute_set(202, target)
+	var cast_ok := svc.try_cast(101, 202, sk)
+	svc.tick_active_runners(600.0)
+	var ok := cast_ok and is_equal_approx(caster.get_current(GDSkillTypes.AttributeKind.MANA), 25.0) \
+		and is_equal_approx(target.get_current(GDSkillTypes.AttributeKind.HEALTH), 320.0)
+	svc.dispose()
+	return ok
+
+
+func _run_sample_guide(graph: GDGuideGraphRes) -> bool:
+	var host := GDGuideServices.GuideHost.new()
+	host.set_predicate("sample_has_coin", true)
+	var runner := GDGuideRunnerSystem.GuideRunner.new(host)
+	var started := runner.try_start(graph)
+	host.simulate_click()
+	runner.tick(0.05)
+	host.simulate_click()
+	runner.tick(0.05)
+	host.signals.publish("SamplePanelReady")
+	runner.tick(0.05)
+	host.signals.publish("SampleCoinCollected")
+	runner.tick(0.05)
+	runner.tick(0.6)
+	var ok := started and not runner.is_running and runner.current_run.is_finished \
+		and runner.current_run.exit_reason == GDGuideData.GuideExitReason.COMPLETED and host.progress.is_graph_completed(graph.graph_id)
+	runner.dispose()
+	host.dispose()
+	return ok
+
+
+func _make_round_trip_layout() -> GDLevelSceneRes:
+	var layout := GDLevelSceneRes.new()
+	layout.display_name = "RoundTrip"
+	var spline := GDPathSystem.SplineData.build_default_spline(Vector3(1, 0, 1))
+	spline.add_knot(GDPathSystem.SplineKnot.new(Vector3(0, 0, 4), Vector3(-1, 0, 0), Vector3(1, 0, 0)))
+	spline.closed = true
+	var pid := layout.editor_add_path(3, spline, 2.5)
+	var path: GDPathSystem.PathInstance = layout.editor_try_get_path(pid)["path"]
+	layout.editor_replace_path(pid, path.with_overrides([GDPlacementData.PlacementAttributeOverride.of_float("path.speed_bonus", 0.75)]))
+	layout.editor_add_camera_pose("Main", "主机位", Vector3(0, 12, -8), Vector3(-50, 0, 0), 55.0)
+	var pose: GDCameraPoseSystem.CameraPose = layout.editor_try_get_camera_pose(0)["pose"]
+	layout.editor_replace_camera_pose_at(0, pose.with_bound_edges(-40.0, 40.0, -20.0, 25.0).with_zoom_range(10.0, 80.0).with_initial_zoom(0.3))
+	return layout
+
+# ─────────────────────── 7. CLI & Editor Services ───────────────────────
+
+func _test_cli_and_editor_services() -> void:
+	print("[7/8] Testing Unified CLI & Editor Services...")
+
+	# Shared argument parser
+	var ctx := GDCliRoot.parse_args(["asset.tres", "--pos", "-1,2,3", "--dry-run", "keep", "--k=v", "--flag"])
+	_check(",".join(ctx.positionals) == "asset.tres,keep" and ctx.get_option("pos") == "-1,2,3" and ctx.get_option("k") == "v", "CliContext parses positionals, negative values and --key=value")
+	_check(ctx.has_flag("dry-run") and ctx.has_flag("flag") and not ctx.options.has("dry-run"), "--dry-run is always a flag and never swallows the next argument")
+
+	# Unified, table-driven CLI
+	var names := GdesignerToolsCli.commands().map(func(c: Dictionary) -> String: return c["name"])
+	_check(names.has("help") and names.has("atom.create") and names.has("layout.list") and names.has("skill.create") and names.has("guide.create"), "GdesignerToolsCli.commands lists every module's commands")
+	_check(GdesignerToolsCli.commands().all(func(c: Dictionary) -> bool: return not str(c["summary"]).is_empty()), "Every CLI command has a summary")
+	var help := JSON.parse_string(GdesignerToolsCli.run("help")) as Dictionary
+	_check(bool(help["ok"]) and (help["commands"] as Array).size() == names.size(), "help returns the derived command list")
+	var unknown := JSON.parse_string(GdesignerToolsCli.run("nope.cmd")) as Dictionary
+	_check(not bool(unknown["ok"]) and unknown["code"] == "unknown-command", "Unknown command reports unknown-command")
+	var alias := JSON.parse_string(GdesignerToolsCli.run("sceneeditor.layout.list")) as Dictionary
+	_check(alias["command"] == "layout.list" and alias["code"] == "layout-required", "sceneeditor.* aliases resolve to the canonical command")
+	var empty := JSON.parse_string(GdesignerToolsCli.run("  ")) as Dictionary
+	_check(not bool(empty["ok"]) and empty["code"] == "BAD_ARG", "Empty command line reports BAD_ARG")
+	var atom_list := JSON.parse_string(GdesignerToolsCli.run("atom.list-templates")) as Dictionary
+	_check(bool(atom_list["ok"]) and atom_list["code"] == "OK" and atom_list.has("templates"), "Core atom.* keeps its {ok, code, message} result shape")
+	var dry := JSON.parse_string(GdesignerToolsCli.run("guide.create --id 4242 --name Dry")) as Dictionary
+	_check(bool(dry["ok"]) and GDGuideEditing.find_graph(4242) != null, "guide.create registers the new graph")
+	var dup_id := JSON.parse_string(GdesignerToolsCli.run("guide.create --id 4242 --name Again")) as Dictionary
+	_check(not bool(dup_id["ok"]) and dup_id["code"] == "id.duplicate", "guide.create rejects a duplicate graph id")
+	GDGuideEditing._in_memory_graphs.erase(4242)
+
+	# GDArchetypeOps
+	var base := GDLevelArchetypeRes.new()
+	base.editor_init_with_addresses(1000, "基底", "Entity_Base", "Preview_Base")
+	base.custom_attributes.append(GDCustomAttributeDef.editor_create("hp", "血量", GDCoreTypes.KeywordValueType.INT, 10))
+	var variant := GDArchetypeOps.create_duplicate(base, 1001, "PlacementArchetype_Test_Variant", "变体", true)
+	_check(variant is GDLevelArchetypeRes and variant.override_base_archetype == base and variant.manufactured_prefab_address == "Entity_Base", "create_duplicate(as_override) keeps the script type and binds the base")
+	_check(variant.custom_attributes.size() == 1 and variant.custom_attributes[0] != base.custom_attributes[0], "create_duplicate clones custom attributes instead of sharing them")
+	var copy := GDArchetypeOps.create_duplicate(variant, 1002, "PlacementArchetype_Test_Copy", "副本")
+	_check(not copy.is_override_archetype and copy.override_base_archetype == null, "Plain duplicate of a variant is an independent archetype")
+	_check(GDArchetypeOps.would_form_cycle(base, variant) and not GDArchetypeOps.would_form_cycle(variant, copy), "would_form_cycle follows the override chain")
+	_check(GDArchetypeOps.count_overrides_of(base, [base, variant, copy]) == 1, "count_overrides_of counts direct variants")
+	_check(not bool(GDArchetypeOps.try_rebind_base(base, variant)["ok"]) and bool(GDArchetypeOps.try_rebind_base(variant, copy)["ok"]) and variant.override_base_archetype == copy, "try_rebind_base rejects cycles and rebinds otherwise")
+
+	# Level archetype rename
+	var layout := GDLevelSceneRes.new()
+	var arch := GDLevelArchetypeRes.new()
+	arch.resource_name = "PlacementArchetype_Test_Block"
+	arch.editor_init_with_addresses(layout.editor_allocate_next_archetype_stable_id(), "方块", "", "")
+	layout.editor_add_archetype(arch)
+	var inst_id := layout.editor_add_placement(arch.stable_id, Vector3.ZERO, Vector3.ZERO, Vector3.ONE, 1)
+	var renamed := layout.editor_rename_archetype(arch, "PlacementArchetype_Test_Tower", "塔")
+	var inst: GDPlacementData.PlacementInstance = layout.editor_try_get_placement(inst_id)["inst"]
+	_check(bool(renamed["ok"]) and arch.resource_name == "PlacementArchetype_Test_Tower" and inst.instance_name == "Tower_%d" % inst_id and inst.display_name == "塔 #%d" % inst_id, "editor_rename_archetype renames the archetype and its default-named placements")
+	_check(not bool(layout.editor_rename_archetype(arch, "1bad", "x")["ok"]), "editor_rename_archetype rejects invalid identifiers")
+
+	# reconcile_scene: spawn missing, free stale, apply transforms
+	var parent := Node3D.new()
+	get_root().add_child(parent)
+	var second := layout.editor_add_placement(arch.stable_id, Vector3(1, 0, 0), Vector3.ZERO, Vector3.ONE, 1)
+	GDLevelSceneDrop.reconcile_scene(layout, parent)
+	_check(parent.get_child_count() == 2, "reconcile_scene spawns placements missing from the scene")
+	layout.editor_remove_placement(second)
+	layout.editor_replace_placement(inst_id, inst.with_transform(Vector3(7, 0, 7), Vector3.ZERO, Vector3.ONE))
+	var stray := Node3D.new()
+	parent.add_child(stray)
+	GDLevelSceneDrop.reconcile_scene(layout, parent)
+	var kept := parent.get_children().filter(func(n: Node) -> bool: return n.has_meta(GDLevelSceneDrop.META_ID))
+	_check(kept.size() == 1 and int(kept[0].get_meta(GDLevelSceneDrop.META_ID)) == inst_id and (kept[0] as Node3D).position == Vector3(7, 0, 7) and is_instance_valid(stray), "reconcile_scene frees removed placements, applies transforms and leaves foreign nodes")
+	GDLevelSceneDrop.reconcile_scene(layout)
+	_check(parent.get_child_count() == 2, "reconcile_scene without an edited scene is a no-op")
+	parent.free()
+
+	# CSV export writes a UTF-8 BOM followed by the CSV text
+	var csv_path := "user://gdt_export.csv"
+	var written := GDLevelCsvExporter.try_write_to_file(layout, csv_path)
+	var bytes := FileAccess.get_file_as_bytes(csv_path)
+	_check(bool(written["ok"]) and bytes.slice(0, 3) == PackedByteArray([0xEF, 0xBB, 0xBF]) and bytes.slice(3).get_string_from_utf8() == GDLevelCsvExporter.build_csv(layout), "CSV export writes BOM + UTF-8 text")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(csv_path))
+
 # ─────────────────────── 6. UI Windows & Main Dock Integration ───────────────────────
 
 func _test_ui_windows_and_main_dock() -> void:
-	print("[6/6] Testing UI Windows & Main Dock Integration...")
-	var dock := GdesignerToolsMainDock.new()
-	get_root().add_child(dock)
-	_check(dock.level_editor != null and dock.actor_editor != null and dock.skill_editor != null and dock.guide_editor != null and dock.cli_console != null, "GdesignerToolsMainDock instantiates all 4 editors + CLI console")
+	print("[8/8] Testing UI Shell...")
+	GDSampleFactory.ensure_sample_assets()
+	var win := GdesignerToolsWindow.new()
+	_check(win.dock != null and not win.exclusive and not win.transient, "GdesignerTools window is an independent non-modal host")
+	var dock := win.dock
+	get_root().add_child(win)
+	_check(dock.level_editor != null and dock.actor_editor != null and dock.skill_editor != null and dock.guide_editor != null and dock.cli_console != null, "Shell hosts all four pages and the console")
 
-	# Test unified CLI dispatch through dock
-	var res_guide := JSON.parse_string(GdesignerToolsMainDock.dispatch_unified_cli("guide.list"))
-	_check(res_guide is Dictionary and bool(res_guide["ok"]), "Unified CLI dispatches guide.list")
+	dock.switch_to_tab(1)
+	_check(dock.current_page == dock.actor_editor and dock.actor_editor.visible and not dock.level_editor.visible, "Switching tabs shows exactly one page")
+	_check(dock.actor_editor.library != null, "Opening a page loads a default document")
+	dock.switch_to_tab(GdesignerToolsMainDock.TAB_CONSOLE)
+	_check(dock.cli_console.visible and dock.current_page == dock.actor_editor, "The console opens as a drawer over the current page")
 
-	var res_skill := JSON.parse_string(GdesignerToolsMainDock.dispatch_unified_cli("skill.list"))
-	_check(res_skill is Dictionary and bool(res_skill["ok"]), "Unified CLI dispatches skill.list")
+	var doc := dock.actor_editor.doc
+	var arch: GDArchetypeRes = dock.actor_editor.library.archetypes[0]
+	var original := arch.display_name
+	arch.editor_set_display_name("临时")
+	doc.commit("改名")
+	_check(not dock.unsaved_titles().is_empty(), "Shell reports unsaved documents for the editor's close prompt")
+	doc.undo()
+	_check(arch.display_name == original and dock.unsaved_titles().is_empty(), "Undo returns the document to its saved state")
 
-	var res_atom := JSON.parse_string(GdesignerToolsMainDock.dispatch_unified_cli("atom.list-templates"))
-	_check(res_atom is Dictionary and bool(res_atom["ok"]), "Unified CLI dispatches atom.list-templates")
+	var keep := GDDocument.new(GDActorLibraryRes.new())
+	keep.resource.display_name = "一"
+	keep.commit("甲", true)
+	keep.resource.display_name = "二"
+	keep.commit("甲", true)
+	keep.undo()
+	_check(keep.resource.display_name == "", "GDDocument merges rapid commits with the same label into one undo step")
 
-	if dock.guide_editor != null:
-		if dock.guide_editor._runner != null:
-			dock.guide_editor._runner.dispose()
-		if dock.guide_editor._host != null:
-			dock.guide_editor._host.dispose()
-	get_root().remove_child(dock)
-	dock.free()
-
-	var editor := GDLevelEditorWindow.new()
-	get_root().add_child(editor)
-	editor._create_new_in_memory_layout()
-	_check(_tree_has_drag_source(editor), "Level editor archetype card is a viewport drag source")
 	var catcher := GDLevelSceneDrop.DropCatcher.new()
 	_check(catcher._can_drop_data(Vector2.ZERO, {"type": GDLevelSceneDrop.DRAG_TYPE, "stable_id": 1}), "Viewport drop catcher accepts archetype payload")
 	_check(not catcher._can_drop_data(Vector2.ZERO, {"type": "files"}), "Viewport drop catcher ignores foreign drag types")
 	catcher.free()
 
 	var layout := GDLevelSceneRes.new()
-	var arch := GDLevelArchetypeRes.new()
-	arch.editor_init_with_addresses(layout.editor_allocate_next_archetype_stable_id(), "示例方块", "", "")
-	layout.editor_add_archetype(arch)
-	var payload := GDLevelSceneDrop.begin(arch, layout)
+	var level_arch := GDLevelArchetypeRes.new()
+	level_arch.editor_init_with_addresses(layout.editor_allocate_next_archetype_stable_id(), "示例方块", "", "")
+	layout.editor_add_archetype(level_arch)
+	var payload := GDLevelSceneDrop.begin(level_arch, layout)
 	_check(GDLevelSceneDrop.is_payload(payload) and GDLevelSceneDrop.is_active(), "Begin archetype drag publishes gdesigner_archetype payload")
 	var parallel := GDLevelSceneDrop.ray_intersect_plane(Vector3.ZERO, Vector3.RIGHT, Vector3.UP, Vector3.ZERO)
 	var hit := GDLevelSceneDrop.ray_intersect_plane(Vector3(2, 10, -3), Vector3(0, -1, 0), Vector3.UP, Vector3.ZERO)
@@ -526,14 +856,14 @@ func _test_ui_windows_and_main_dock() -> void:
 	ground.name = GDLevelSceneDrop.GROUND_NAME
 	var body := StaticBody3D.new()
 	ground.add_child(body)
-	_check(GDLevelSceneDrop.is_logical_ground(body), "Logical ground name matches Unity [SceneEditor Ground]")
+	_check(GDLevelSceneDrop.is_logical_ground(body), "Logical ground name matches [SceneEditor Ground]")
 	ground.free()
 	GDLevelSceneDrop.poll()
 	_check(not GDLevelSceneDrop.is_active(), "Releasing the mouse outside a viewport cancels the drag")
 
 	var parent := Node3D.new()
 	get_root().add_child(parent)
-	var placed := GDLevelSceneDrop.place_archetype(layout, arch, Vector3(3, 0, 5), parent)
+	var placed := GDLevelSceneDrop.place_archetype(layout, level_arch, Vector3(3, 0, 5), parent)
 	_check(bool(placed.get("ok", false)), "place_archetype writes the level and spawns a scene node")
 	var inst_id := int(placed.get("instance_id", 0))
 	var spawned := GDLevelSceneDrop.find_placed_node(inst_id)
@@ -562,17 +892,7 @@ func _test_ui_windows_and_main_dock() -> void:
 	_check(holder.get_child_count() == 0, "clear_children detaches rebuilt rows immediately")
 	holder.free()
 	scroll.free()
-
-	var win := GdesignerToolsWindow.new()
-	_check(win.dock != null and win.dock.level_editor != null and not win.exclusive and not win.transient, "GdesignerTools window is an independent non-modal host")
-	if win.dock.guide_editor != null:
-		if win.dock.guide_editor._runner != null:
-			win.dock.guide_editor._runner.dispose()
-		if win.dock.guide_editor._host != null:
-			win.dock.guide_editor._host.dispose()
 	win.free()
-	get_root().remove_child(editor)
-	editor.free()
 
 
 func _wipe_res_dir(res_dir: String) -> void:
@@ -596,12 +916,3 @@ func _wipe_abs_dir(abs_dir: String) -> void:
 		name = dir.get_next()
 	dir.list_dir_end()
 	DirAccess.remove_absolute(abs_dir)
-
-
-func _tree_has_drag_source(node: Node) -> bool:
-	if node is GDLevelSceneDrop.DragSource:
-		return true
-	for child in node.get_children():
-		if _tree_has_drag_source(child):
-			return true
-	return false

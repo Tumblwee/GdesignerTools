@@ -46,9 +46,7 @@ class ActorArchetypeAssetPaths extends RefCounted:
 		return "%s/%s%s_%s.tscn" % [folder.trim_suffix("/"), ENTITY_FILE_PREFIX, module_name, archetype_name]
 
 	static func is_standard_archetype_folder(folder: String) -> bool:
-		if folder == null or folder.is_empty():
-			return false
-		return folder.to_lower().contains("/actors/") and folder.ends_with(ARCHETYPE_FOLDER_SUFFIX)
+		return not folder.is_empty() and folder.to_lower().contains("/actors/") and folder.ends_with(ARCHETYPE_FOLDER_SUFFIX)
 
 	static func resolve_archetype_stem(archetype: GDActorLibraryRes.ActorArchetypeRes, module_name: String) -> String:
 		if archetype == null:
@@ -93,12 +91,12 @@ class ActorArchetypeRenameService extends RefCounted:
 			return {"ok": false, "module_name": "", "error": "原型为空。"}
 		if library == null:
 			return {"ok": false, "module_name": "", "error": "请先打开一个演员库，再重命名原型。"}
-		var clean_name := (new_archetype_name if new_archetype_name != null else "").strip_edges()
+		var clean_name := new_archetype_name.strip_edges()
 		if clean_name.is_empty() or not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(
 			clean_name, GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME
 		):
 			return {"ok": false, "module_name": "", "error": "名称必须是合法 C# 标识符（字母/数字/下划线，不可数字开头）。"}
-		if new_display_name == null or new_display_name.strip_edges().is_empty():
+		if new_display_name.strip_edges().is_empty():
 			return {"ok": false, "module_name": "", "error": "显示名不能为空。"}
 		var mod := ActorArchetypeAssetPaths.resolve_module_name(library)
 		var cur_stem := ActorArchetypeAssetPaths.resolve_archetype_stem(archetype, mod)
@@ -144,12 +142,7 @@ class ActorArchetypeDuplicateService extends RefCounted:
 		for i in range(1, 1000):
 			var cand := "%s_%d" % [base_stem, i]
 			if not ActorArchetypeAssetPaths.is_archetype_name_taken(library, cand):
-				return {
-					"ok": true,
-					"archetype_name": cand,
-					"display_name": "%s_%d" % [base_disp, i],
-					"error": ""
-				}
+				return {"ok": true, "archetype_name": cand, "display_name": "%s_%d" % [base_disp, i], "error": ""}
 		return {"ok": false, "archetype_name": "", "display_name": "", "error": "无法找到可用的 _N 后缀。"}
 
 	static func try_duplicate(
@@ -160,6 +153,16 @@ class ActorArchetypeDuplicateService extends RefCounted:
 	) -> Dictionary:
 		if source == null or library == null:
 			return {"ok": false, "created": null, "error": "源原型或演员库为空。"}
+		return _create_in_library(source, library, archetype_name, display_name, false)
+
+	## 校验名称后，按演员命名约定（ActorArchetype_<模块>_<名> / Entity_<模块>_<名>）复制原型并加入演员库。
+	static func _create_in_library(
+		source: GDActorLibraryRes.ActorArchetypeRes,
+		library: GDActorLibraryRes,
+		archetype_name: String,
+		display_name: String,
+		as_override: bool
+	) -> Dictionary:
 		var clean_name := archetype_name.strip_edges()
 		if not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(
 			clean_name, GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME
@@ -172,19 +175,19 @@ class ActorArchetypeDuplicateService extends RefCounted:
 
 		var mod := ActorArchetypeAssetPaths.resolve_module_name(library)
 		library.editor_reconcile_next_ids_after_load()
-		var new_id := library.editor_allocate_next_archetype_stable_id()
-		var created := GDActorArchetypeRes.new()
-		created.resource_name = "%s%s_%s" % [ActorArchetypeAssetPaths.ARCHETYPE_FILE_PREFIX, mod, clean_name]
-		var new_addr := "%s%s_%s" % [ActorArchetypeAssetPaths.ENTITY_FILE_PREFIX, mod, clean_name]
-		created.editor_init_with_addresses(new_id, display_name.strip_edges(), new_addr, source.preview_prefab_address)
-		created.editor_set_archetype_type_stable_id(source.archetype_type_stable_id)
-		for def in source.custom_attributes:
-			if def != null:
-				created.custom_attributes.append(def.clone_def())
+		var created := GDArchetypeOps.create_duplicate(
+			source,
+			library.editor_allocate_next_archetype_stable_id(),
+			"%s%s_%s" % [ActorArchetypeAssetPaths.ARCHETYPE_FILE_PREFIX, mod, clean_name],
+			display_name,
+			as_override,
+			"%s%s_%s" % [ActorArchetypeAssetPaths.ENTITY_FILE_PREFIX, mod, clean_name]
+		) as GDActorLibraryRes.ActorArchetypeRes
 		library.editor_add_archetype(created)
 		return {"ok": true, "created": created, "error": ""}
 
 
+## 演员侧的复写命名约定；成环检测 / 计数 / 改挂基底见 GDArchetypeOps。
 class ActorArchetypeOverrideService extends RefCounted:
 	const OVERRIDE_NAME_SUFFIX := "_Override"
 	const OVERRIDE_DISPLAY_SUFFIX := "_复写"
@@ -202,12 +205,7 @@ class ActorArchetypeOverrideService extends RefCounted:
 			var ord := "" if i == 1 else str(i)
 			var cand := base_stem + OVERRIDE_NAME_SUFFIX + ord
 			if not ActorArchetypeAssetPaths.is_archetype_name_taken(library, cand):
-				return {
-					"ok": true,
-					"archetype_name": cand,
-					"display_name": base_disp + OVERRIDE_DISPLAY_SUFFIX + ord,
-					"error": ""
-				}
+				return {"ok": true, "archetype_name": cand, "display_name": base_disp + OVERRIDE_DISPLAY_SUFFIX + ord, "error": ""}
 		return {"ok": false, "archetype_name": "", "display_name": "", "error": "无法找到可用的 _Override 后缀。"}
 
 	static func try_create(
@@ -222,36 +220,4 @@ class ActorArchetypeOverrideService extends RefCounted:
 			return {"ok": false, "created": null, "error": "请先打开一个演员库，再新建 Override。"}
 		if base_arch.manufactured_prefab_address.is_empty():
 			return {"ok": false, "created": null, "error": "base 原型未配置「实例」Prefab，无法建 Prefab Variant。"}
-		var clean_name := archetype_name.strip_edges()
-		if not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(
-			clean_name, GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME
-		):
-			return {"ok": false, "created": null, "error": "名称必须是合法 C# 标识符。"}
-		if display_name.strip_edges().is_empty():
-			return {"ok": false, "created": null, "error": "显示名不能为空。"}
-		if ActorArchetypeAssetPaths.is_archetype_name_taken(library, clean_name):
-			return {"ok": false, "created": null, "error": "已存在同名原型：%s" % clean_name}
-
-		var mod := ActorArchetypeAssetPaths.resolve_module_name(library)
-		library.editor_reconcile_next_ids_after_load()
-		var new_id := library.editor_allocate_next_archetype_stable_id()
-		var created := GDActorArchetypeRes.new()
-		created.resource_name = "%s%s_%s" % [ActorArchetypeAssetPaths.ARCHETYPE_FILE_PREFIX, mod, clean_name]
-		var new_addr := "%s%s_%s" % [ActorArchetypeAssetPaths.ENTITY_FILE_PREFIX, mod, clean_name]
-		created.editor_init_with_addresses(new_id, display_name.strip_edges(), new_addr, base_arch.preview_prefab_address)
-		created.editor_set_archetype_type_stable_id(base_arch.archetype_type_stable_id)
-		created.editor_set_override_base(base_arch)
-		for def in base_arch.custom_attributes:
-			if def != null:
-				created.custom_attributes.append(def.clone_def())
-		library.editor_add_archetype(created)
-		return {"ok": true, "created": created, "error": ""}
-
-	static func would_form_cycle(override_arch: GDArchetypeRes, candidate_base: GDArchetypeRes) -> bool:
-		return GDLayoutMigrationAndArchetypeOps.ArchetypeOverrideService.would_form_cycle(override_arch, candidate_base)
-
-	static func count_overrides_of(base_arch: GDArchetypeRes, candidates: Array) -> int:
-		return GDLayoutMigrationAndArchetypeOps.ArchetypeOverrideService.count_overrides_of(base_arch, candidates)
-
-	static func try_rebind_base(override_arch: GDActorLibraryRes.ActorArchetypeRes, new_base: GDActorLibraryRes.ActorArchetypeRes) -> Dictionary:
-		return GDLayoutMigrationAndArchetypeOps.ArchetypeOverrideService.try_rebind_base(override_arch, new_base)
+		return ActorArchetypeDuplicateService._create_in_library(base_arch, library, archetype_name, display_name, true)

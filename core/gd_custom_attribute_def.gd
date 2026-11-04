@@ -35,8 +35,8 @@ static func editor_create(
 	p_default_value: Variant
 ) -> GDCustomAttributeDef:
 	var def := GDCustomAttributeDef.new()
-	def.tag = p_tag if p_tag != null else ""
-	def.display_name = p_display_name if p_display_name != null else ""
+	def.tag = p_tag
+	def.display_name = p_display_name
 	def.value_type = p_value_type
 	match p_value_type:
 		GDCoreTypes.KeywordValueType.INT:

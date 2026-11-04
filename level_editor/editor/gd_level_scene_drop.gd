@@ -2,15 +2,11 @@
 class_name GDLevelSceneDrop
 extends RefCounted
 
-## 把建筑原型拖进 Godot 正在编辑的场景。
+## 把关卡原型拖进 Godot 正在编辑的场景。
 ##
-## Unity 侧是 EditorWindow + DragAndDrop + SceneView.duringSceneGui：拖拽是编辑器全局状态，
-## Scene 视图每帧收 DragUpdated / DragPerform，吸附到名为 "[SceneEditor Ground]" 的逻辑地面后写入 LevelSceneSO 并生成实例。
-##
-## Godot 没有全局 DragAndDrop。Control._get_drag_data 是进程内拖拽（Godot 4 可跨同一进程的 Window）。
-## 3D/2D 主视口只接受 files / nodes / resource，不认识策划原型的 StableId。
-## 因此这里做两件事，都合编辑器插件规范：
-##   1. 卡片 _get_drag_data 发起拖拽（窗口内的「替换原型」区可以直接接住）。
+## Control 拖拽只在进程内有效，而 3D/2D 主视口只接受 files / nodes / resource，不认识原型。
+## 因此分两步：
+##   1. 原型列表用 begin() 生成拖拽数据（关卡页里的平面图和属性栏可以直接接住）。
 ##   2. EditorPlugin.set_force_draw_over_forwarding_enabled() 在视口上放一个只在拖拽期间拦截的 Control，
 ##      同时用 DisplayServer 鼠标位置做射线吸附。不实现 _handles()，避免抢走当前选中节点的 Inspector。
 ## 落下的节点写进当前场景的 Placements 容器（owner = 场景根，会随场景保存），并写入关卡资源。
@@ -20,10 +16,11 @@ const DRAG_TYPE := "gdesigner_archetype"
 const GHOST_NAME := "[Archetype Drag Ghost]"
 const GROUND_NAME := "[SceneEditor Ground]"
 const PLACEMENTS_ROOT := "Placements"
-const META_ID := "gdesigner_placement_id"
+const META_ID := GDSceneEditorRuntime.PLACEMENT_ID_META
 const RAY_LENGTH := 4000.0
 
-static var active: Dictionary = {}
+## 当前进行中的拖拽；没有拖拽时为 null。
+static var session: DragSession = null
 static var _spawned: Dictionary = {} # int -> Node
 static var _plugin: EditorPlugin = null
 static var _host: Node = null
@@ -31,104 +28,40 @@ static var _status_cb: Callable = Callable()
 static var _last_status: String = ""
 
 
+## 一次原型拖拽的状态：拖的是谁、落点吸附结果、是否已提交，以及视口里的预览幽灵节点。
+class DragSession extends RefCounted:
+	var archetype: GDArchetypeRes = null
+	var layout: GDLevelSceneRes = null
+	var title: String = ""
+	var hovering: bool = false
+	var snap_valid: bool = false
+	var snap_point: Vector3 = Vector3.ZERO
+	var ground: bool = false
+	var use_2d: bool = false
+	var committed: bool = false
+	var suppress: bool = false
+	var button_was_down: bool = true
+	var ghost: Node = null
+
+	func _init(p_archetype: GDArchetypeRes, p_layout: GDLevelSceneRes) -> void:
+		archetype = p_archetype
+		layout = p_layout
+		title = archetype.display_name if not archetype.display_name.is_empty() else ("Archetype#%d" % archetype.stable_id)
+
+	var can_place: bool:
+		get:
+			return hovering and snap_valid and not committed and not suppress
+
+
+## 撤销 / 重做的回调宿主（UndoRedo 需要 Object 方法）。
 class Host extends Node:
 	func erase_placed(layout: GDLevelSceneRes, inst_id: int) -> void:
-		var api := load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd")
-		api.erase_placed(layout, inst_id)
-		api.notify_ui("已撤销摆放")
+		GDLevelSceneDrop.erase_placed(layout, inst_id)
+		GDLevelSceneDrop.notify_ui("已撤销摆放")
 
 	func restore_placed(layout: GDLevelSceneRes, snapshot: GDPlacementData.PlacementInstance) -> void:
-		var api := load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd")
-		api.restore_placed(layout, snapshot)
-		api.notify_ui("已恢复摆放")
-
-
-class DragSource extends Control:
-	var archetype: GDArchetypeRes = null
-	var layout_getter: Callable = Callable()
-	var on_click: Callable = Callable()
-	var selected: bool = false
-	var title_text: String = ""
-	var _dragged: bool = false
-
-	func _ready() -> void:
-		mouse_filter = Control.MOUSE_FILTER_STOP
-		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		custom_minimum_size = Vector2(148, 58)
-		size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		tooltip_text = "按住拖到 3D 或 2D 视口后松开落点。单击只查看属性。"
-		resized.connect(queue_redraw)
-
-	func _gui_input(event: InputEvent) -> void:
-		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
-			if _dragged or get_viewport().gui_is_dragging():
-				_dragged = false
-				accept_event()
-				return
-			if on_click.is_valid():
-				on_click.call()
-			accept_event()
-
-	func _get_drag_data(_at: Vector2) -> Variant:
-		_dragged = true
-		var layout: GDLevelSceneRes = null
-		if layout_getter.is_valid():
-			layout = layout_getter.call()
-		var payload: Dictionary = load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").begin(archetype, layout)
-		var preview := Label.new()
-		preview.text = title_text if not title_text.is_empty() else "原型"
-		preview.add_theme_color_override("font_color", Color(0.85, 1.0, 0.9))
-		set_drag_preview(preview)
-		return payload
-
-	func _draw() -> void:
-		var bg := Color(0.16, 0.36, 0.58, 1.0) if selected else Color(0.13, 0.15, 0.19, 1.0)
-		var border := Color(0.55, 0.82, 1.0) if selected else Color(1, 1, 1, 0.1)
-		GDEditorUi.paint_round_rect(self, Rect2(Vector2.ZERO, size), bg, border, 6, 2 if selected else 1)
-		draw_rect(Rect2(Vector2(0, 8), Vector2(3, maxf(10.0, size.y - 16.0))), Color(0.55, 0.86, 1.0) if selected else Color(0.45, 0.78, 0.62))
-		var font := get_theme_default_font()
-		if font == null:
-			return
-		var font_size := get_theme_default_font_size()
-		font.draw_string(get_canvas_item(), Vector2(12, font_size + 4), title_text, HORIZONTAL_ALIGNMENT_LEFT, maxf(8.0, size.x - 20.0), font_size, Color(0.97, 0.98, 1.0))
-		font.draw_string(get_canvas_item(), Vector2(12, font_size * 2 + 8), "按住拖到视口", HORIZONTAL_ALIGNMENT_LEFT, maxf(8.0, size.x - 20.0), maxi(11, font_size - 2), Color(0.72, 0.9, 0.78))
-
-
-class ReplaceDrop extends PanelContainer:
-	var instance_id: int = 0
-	var layout_getter: Callable = Callable()
-	var on_replaced: Callable = Callable()
-
-	func _init() -> void:
-		custom_minimum_size.y = 56
-		mouse_filter = Control.MOUSE_FILTER_STOP
-		GDEditorUi.style_card(self, false)
-		var label := Label.new()
-		label.text = "把左侧原型拖到这里\n只换原型，位置和旋转会保留"
-		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		label.custom_minimum_size.x = 1
-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		label.add_theme_color_override("font_color", Color(0.78, 0.86, 0.8))
-		add_child(label)
-
-	func _can_drop_data(_at: Vector2, data: Variant) -> bool:
-		return load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").is_payload(data)
-
-	func _drop_data(_at: Vector2, data: Variant) -> void:
-		load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").finish_without_placing()
-		if not layout_getter.is_valid():
-			return
-		var layout: GDLevelSceneRes = layout_getter.call()
-		if layout == null:
-			return
-		var stable_id := int(data.get("stable_id", 0))
-		if layout.editor_replace_placement_archetype(instance_id, stable_id):
-			load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").respawn(layout, instance_id)
-			if on_replaced.is_valid():
-				on_replaced.call()
+		GDLevelSceneDrop.restore_placed(layout, snapshot)
+		GDLevelSceneDrop.notify_ui("已恢复摆放")
 
 
 class DropCatcher extends Control:
@@ -139,14 +72,14 @@ class DropCatcher extends Control:
 		set_process(true)
 
 	func _process(_delta: float) -> void:
-		var dragging: bool = load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").is_active()
+		var dragging: bool = GDLevelSceneDrop.is_active()
 		mouse_filter = Control.MOUSE_FILTER_STOP if dragging else Control.MOUSE_FILTER_IGNORE
 
 	func _can_drop_data(_at: Vector2, data: Variant) -> bool:
-		return load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").is_payload(data)
+		return GDLevelSceneDrop.is_payload(data)
 
 	func _drop_data(_at: Vector2, _data: Variant) -> void:
-		load("res://addons/gdesigner_tools/level_editor/editor/gd_level_scene_drop.gd").commit_hover()
+		GDLevelSceneDrop.commit_hover()
 
 
 static func bind_plugin(plugin: EditorPlugin, host: Node) -> void:
@@ -163,7 +96,7 @@ static func is_payload(data: Variant) -> bool:
 
 
 static func is_active() -> bool:
-	return not active.is_empty()
+	return session != null
 
 
 static func is_logical_ground(node: Node) -> bool:
@@ -212,63 +145,46 @@ static func begin(archetype: GDArchetypeRes, layout: GDLevelSceneRes) -> Diction
 	cancel()
 	if archetype == null:
 		return {}
-	var title := archetype.display_name if not archetype.display_name.is_empty() else ("Archetype#%d" % archetype.stable_id)
-	active = {
-		"archetype": archetype,
-		"layout": layout,
-		"stable_id": archetype.stable_id,
-		"title": title,
-		"snap_valid": false,
-		"snap_point": Vector3.ZERO,
-		"hovering": false,
-		"committed": false,
-		"suppress": false,
-		"ground": false,
-		"use_2d": false,
-		"button_was_down": true,
-		"ghost": null,
-	}
-	_set_status("拖拽中：%s。移到 3D 或 2D 视口后松开。" % title, false)
-	return {"type": DRAG_TYPE, "stable_id": archetype.stable_id, "display_name": title}
+	session = DragSession.new(archetype, layout)
+	_set_status("拖拽中：%s。移到 3D 或 2D 视口后松开。" % session.title, false)
+	return {"type": DRAG_TYPE, "stable_id": archetype.stable_id, "display_name": session.title}
 
 
 static func poll() -> void:
-	if active.is_empty():
+	if session == null:
 		return
 	var down := _pointer_down()
 	_update_hover()
-	var was_down := bool(active.get("button_was_down", true))
-	if was_down and not down:
-		if not bool(active.get("committed", false)) and not bool(active.get("suppress", false)):
-			if bool(active.get("hovering", false)) and bool(active.get("snap_valid", false)):
-				_place_active(active.get("snap_point", Vector3.ZERO))
-				return
+	if session.button_was_down and not down:
+		if session.can_place:
+			_place_active()
+			return
+		if not session.committed and not session.suppress:
 			_set_status("已取消。按住原型卡片拖到 3D 或 2D 视口再松开。", false)
-		_clear_ghost()
-		active.clear()
+		cancel()
 		return
-	active["button_was_down"] = down
+	session.button_was_down = down
 
 
 static func commit_hover() -> void:
-	if active.is_empty() or bool(active.get("committed", false)) or bool(active.get("suppress", false)):
+	if session == null or session.committed or session.suppress:
 		return
 	_update_hover()
-	if bool(active.get("hovering", false)) and bool(active.get("snap_valid", false)):
-		_place_active(active.get("snap_point", Vector3.ZERO))
+	if session.can_place:
+		_place_active()
 
 
 static func finish_without_placing() -> void:
-	if active.is_empty():
+	if session == null:
 		return
-	active["suppress"] = true
-	active["committed"] = true
+	session.suppress = true
+	session.committed = true
 	_clear_ghost()
 
 
 static func cancel() -> void:
 	_clear_ghost()
-	active.clear()
+	session = null
 
 
 static func shutdown() -> void:
@@ -367,22 +283,81 @@ static func sync_layout_to_scene(layout: GDLevelSceneRes) -> Dictionary:
 	return {"ok": true, "spawned": spawned, "message": message}
 
 
-static func pull_transforms_from_scene(layout: GDLevelSceneRes) -> void:
+## 把场景里实例节点的位姿写回关卡。返回是否有改动。
+static func pull_transforms_from_scene(layout: GDLevelSceneRes) -> bool:
 	if layout == null:
-		return
-	for inst in layout.placements:
+		return false
+	var changed := false
+	for inst in layout.placements.duplicate():
 		if inst == null:
 			continue
 		var node := find_placed_node(inst.instance_id)
+		var pos: Vector3 = inst.position
+		var euler: Vector3 = inst.euler_angles
+		var scl: Vector3 = inst.scale
 		if node is Node3D:
 			var n3 := node as Node3D
-			layout.editor_replace_placement(inst.instance_id, inst.with_transform(n3.position, n3.rotation_degrees, n3.scale))
+			pos = n3.position
+			euler = n3.rotation_degrees
+			scl = n3.scale
 		elif node is Node2D:
 			var n2 := node as Node2D
-			var pos := Vector3(n2.position.x, n2.position.y, inst.position.z)
-			var euler := Vector3(inst.euler_angles.x, inst.euler_angles.y, n2.rotation_degrees)
-			var scl := Vector3(n2.scale.x, n2.scale.y, inst.scale.z)
+			pos = Vector3(n2.position.x, n2.position.y, pos.z)
+			euler = Vector3(euler.x, euler.y, n2.rotation_degrees)
+			scl = Vector3(n2.scale.x, n2.scale.y, scl.z)
+		else:
+			continue
+		if not (pos.is_equal_approx(inst.position) and euler.is_equal_approx(inst.euler_angles) and scl.is_equal_approx(inst.scale)):
 			layout.editor_replace_placement(inst.instance_id, inst.with_transform(pos, euler, scl))
+			changed = true
+	return changed
+
+
+## 让场景与关卡数据一致：补生成缺失的实例、删掉关卡里已不存在的实例节点（Placements 下带 META_ID 的节点）、同步变换。
+## scene_parent 为空时作用于当前编辑场景的 Placements；没有编辑场景则什么都不做。撤销 / 重做后调用。
+static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) -> void:
+	var host := scene_parent
+	if host == null:
+		var scene_root := edited_root()
+		if scene_root == null or layout == null:
+			return
+		host = scene_root.get_node_or_null(PLACEMENTS_ROOT)
+		if host == null:
+			if layout.placements.is_empty():
+				return
+			host = placement_parent(scene_root)
+	if layout == null:
+		return
+	var by_id := {}
+	for inst in layout.placements:
+		if inst != null:
+			by_id[inst.instance_id] = inst
+	var placed := {}
+	for child in host.get_children():
+		if not child.has_meta(META_ID):
+			continue
+		var id := int(child.get_meta(META_ID))
+		if by_id.has(id) and not placed.has(id):
+			placed[id] = child
+		else:
+			if _spawned.get(id) == child:
+				_spawned.erase(id)
+			child.free()
+	for id in by_id:
+		var inst: GDPlacementData.PlacementInstance = by_id[id]
+		var node: Node = placed.get(id)
+		var marker: GDSceneEditorRuntime.PlacementInstanceMarker = null
+		if node != null:
+			marker = node.get_node_or_null("PlacementInstanceMarker") as GDSceneEditorRuntime.PlacementInstanceMarker
+		if marker != null and marker.archetype_stable_id != inst.archetype_stable_id:
+			# 原型换了（例如撤销了“替换原型”）：外观也要跟着换。
+			_spawned.erase(id)
+			node.free()
+			node = null
+		if node != null:
+			_apply_pose(node, inst.position, inst.euler_angles, inst.scale)
+		else:
+			spawn_into(layout, id, host)
 
 
 static func apply_transform(inst_id: int, pos: Vector3, euler: Vector3, scl: Vector3) -> void:
@@ -447,7 +422,7 @@ static func restore_placed(layout: GDLevelSceneRes, snapshot: GDPlacementData.Pl
 
 static func find_placed_node(inst_id: int) -> Node:
 	if _spawned.has(inst_id):
-		var cached: Node = _spawned[inst_id]
+		var cached: Variant = _spawned[inst_id]
 		if is_instance_valid(cached):
 			return cached
 		_spawned.erase(inst_id)
@@ -480,7 +455,7 @@ static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> N
 	node.add_child(marker)
 	if scene_root != null:
 		marker.owner = scene_root
-	if inst.attribute_overrides != null and not inst.attribute_overrides.is_empty():
+	if not inst.attribute_overrides.is_empty():
 		GDEntityAtomSystem.AtomVarTagRegistry.apply_overrides_to_node(node, inst.attribute_overrides)
 	_spawned[inst_id] = node
 	node.tree_exiting.connect(func() -> void:
@@ -520,15 +495,10 @@ static func notify_ui(text: String) -> void:
 	_set_status(text, true)
 
 
-static func _place_active(point: Vector3) -> void:
-	if active.is_empty():
-		return
-	active["committed"] = true
-	var layout: GDLevelSceneRes = active.get("layout")
-	var archetype: GDArchetypeRes = active.get("archetype")
-	_clear_ghost()
-	active.clear()
-	var result := place_archetype(layout, archetype, point)
+static func _place_active() -> void:
+	var placing := session
+	cancel()
+	var result := place_archetype(placing.layout, placing.archetype, placing.snap_point)
 	if not bool(result.get("ok", false)):
 		_set_status(str(result.get("error", "落点失败")), false)
 
@@ -550,11 +520,11 @@ static func _register_history(layout: GDLevelSceneRes, snapshot: GDPlacementData
 
 
 static func _update_hover() -> void:
-	if active.is_empty():
+	if session == null:
 		return
 	if not Engine.is_editor_hint():
-		active["hovering"] = false
-		active["snap_valid"] = false
+		session.hovering = false
+		session.snap_valid = false
 		return
 	var hit3 := _hover_3d()
 	if bool(hit3.get("hit", false)):
@@ -564,24 +534,22 @@ static func _update_hover() -> void:
 	if bool(hit2.get("hit", false)):
 		_store_hover(hit2, true)
 		return
-	active["hovering"] = false
-	active["snap_valid"] = false
+	session.hovering = false
+	session.snap_valid = false
 	_clear_ghost()
-	var title := str(active.get("title", "原型"))
-	_set_status("拖拽中：%s。当前鼠标不在 3D / 2D 视口里。" % title, false)
+	_set_status("拖拽中：%s。当前鼠标不在 3D / 2D 视口里。" % session.title, false)
 
 
 static func _store_hover(hit: Dictionary, use_2d: bool) -> void:
-	active["hovering"] = true
-	active["use_2d"] = use_2d
-	active["snap_valid"] = bool(hit.get("ok", false))
-	active["snap_point"] = hit.get("point", Vector3.ZERO)
-	active["ground"] = bool(hit.get("ground", false))
-	var title := str(active.get("title", "原型"))
-	if bool(active["snap_valid"]):
-		var ground_note := "逻辑地面" if bool(active["ground"]) else ("2D 平面" if use_2d else "Y=0 平面")
-		_set_status("松开把 %s 放到%s %s" % [title, ground_note, _fmt_vec(active["snap_point"])], false)
-		_update_ghost(active["snap_point"], use_2d, true)
+	session.hovering = true
+	session.use_2d = use_2d
+	session.snap_valid = bool(hit.get("ok", false))
+	session.snap_point = hit.get("point", Vector3.ZERO)
+	session.ground = bool(hit.get("ground", false))
+	if session.snap_valid:
+		var ground_note := "逻辑地面" if session.ground else ("2D 平面" if use_2d else "Y=0 平面")
+		_set_status("松开把 %s 放到%s %s" % [session.title, ground_note, _fmt_vec(session.snap_point)], false)
+		_update_ghost(session.snap_point, use_2d, true)
 	else:
 		_set_status("视口里没有可落点（请打开场景）。", false)
 		_update_ghost(Vector3.ZERO, use_2d, false)
@@ -664,17 +632,16 @@ static func _update_ghost(point: Vector3, use_2d: bool, visible: bool) -> void:
 	if root == null:
 		_clear_ghost()
 		return
-	var ghost: Node = active.get("ghost")
-	var archetype: GDArchetypeRes = active.get("archetype")
+	var ghost := session.ghost
 	var want_2d := use_2d and root is Node2D
 	if ghost == null or not is_instance_valid(ghost) or (want_2d and not (ghost is Node2D)) or (not want_2d and ghost is Node2D):
 		_clear_ghost()
-		ghost = _build_visual(archetype, want_2d)
+		ghost = _build_visual(session.archetype, want_2d)
 		ghost.name = GHOST_NAME
 		_strip_ghost(ghost)
 		root.add_child(ghost)
 		ghost.owner = null
-		active["ghost"] = ghost
+		session.ghost = ghost
 	_apply_pose(ghost, point, Vector3.ZERO, Vector3.ONE)
 	ghost.visible = visible
 	if ghost.owner != null:
@@ -682,10 +649,10 @@ static func _update_ghost(point: Vector3, use_2d: bool, visible: bool) -> void:
 
 
 static func _clear_ghost() -> void:
-	if active.is_empty():
+	if session == null:
 		return
-	var ghost: Node = active.get("ghost")
-	active["ghost"] = null
+	var ghost := session.ghost
+	session.ghost = null
 	if ghost != null and is_instance_valid(ghost):
 		ghost.free()
 
@@ -779,7 +746,7 @@ static func _parent_for_restore() -> Node:
 
 
 static func _safe_name(text: String, inst_id: int) -> String:
-	var cleaned := text.strip_edges() if text != null else ""
+	var cleaned := text.strip_edges()
 	if cleaned.is_empty():
 		cleaned = "Placement_%d" % inst_id
 	return cleaned.replace("/", "_").replace(":", "_").replace("@", "_")

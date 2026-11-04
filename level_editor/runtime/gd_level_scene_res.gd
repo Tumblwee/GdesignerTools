@@ -7,11 +7,13 @@ extends Resource
 ##   PlacementInstance.instance_id: 10000+ 单调递增
 ##   Archetype.stable_id:           1000+  单调递增
 ##   PathInstance.path_id:          20000+ 单调递增
+## paths / camera_poses 由内部类组成，Godot 无法直接落盘内部类，统一经 codec_data 存取。
 
 const INSTANCE_ID_START := 10000
 const STABLE_ID_START := 1000
 const PATH_ID_START := 20000
-const ID_START := INSTANCE_ID_START
+## 关卡原型资产名前缀：PlacementArchetype_<模块>_<名>。
+const ARCHETYPE_ASSET_PREFIX := "PlacementArchetype_"
 
 class LevelArchetypeRes extends GDArchetypeRes:
 	pass
@@ -29,9 +31,7 @@ class LevelArchetypeRes extends GDArchetypeRes:
 @export var placements: Array = []
 @export var archetypes: Array[GDArchetypeRes] = []
 @export var nav_mesh_prefab: PackedScene = null
-@export var paths: Array = []
 @export var path_type_keywords: Resource = null
-@export var camera_poses: Array = []
 @export var placement_archetype_type_keywords: Resource = null
 
 @export var next_instance_id: int = INSTANCE_ID_START
@@ -39,6 +39,26 @@ class LevelArchetypeRes extends GDArchetypeRes:
 @export var next_path_id: int = PATH_ID_START
 
 @export var scene_extras: Array = []
+
+var paths: Array = [] # Array[GDPathSystem.PathInstance]
+var camera_poses: Array = [] # Array[GDCameraPoseSystem.CameraPose]
+
+## 唯一的落盘入口：paths / camera_poses 的编码形式。保存、加载、duplicate 均自动经过这里。
+@export_storage var codec_data: Dictionary:
+	get:
+		return codec().encode({"paths": paths, "camera_poses": camera_poses})
+	set(value):
+		var data: Dictionary = codec().decode(value)
+		paths = data.get("paths", []).filter(func(p: Variant) -> bool: return p is GDPathSystem.PathInstance)
+		camera_poses = data.get("camera_poses", []).filter(func(c: Variant) -> bool: return c is GDCameraPoseSystem.CameraPose)
+
+static var _codec: GDDataCodec = null
+
+## 关卡路径与相机机位（GDPathSystem / GDCameraPoseSystem 内部类）的编解码器。
+static func codec() -> GDDataCodec:
+	if _codec == null:
+		_codec = GDDataCodec.new([GDPathSystem, GDCameraPoseSystem])
+	return _codec
 
 func _init() -> void:
 	if layout_id.is_empty():
@@ -228,6 +248,15 @@ static func _rewrite_instance_id_preserving_identity(inst: GDPlacementData.Place
 	if n_up != n or d_up != d:
 		inst.editor_init_instance_identity(n_up, d_up)
 
+## 改一个实例的 ID；名称和显示名里的旧 ID 一并替换。新 ID 必须是正整数且未被占用。
+func editor_reset_instance_id(old_id: int, new_id: int) -> bool:
+	var found := editor_try_get_placement(old_id)
+	if new_id <= 0 or not bool(found.get("ok", false)) or bool(editor_try_get_placement(new_id).get("ok", false)):
+		return false
+	_rewrite_instance_id_preserving_identity(found["inst"], old_id, new_id)
+	emit_changed()
+	return true
+
 func editor_allocate_next_archetype_stable_id() -> int:
 	var id := maxi(STABLE_ID_START, next_archetype_stable_id)
 	next_archetype_stable_id = id + 1
@@ -354,6 +383,27 @@ func editor_refresh_placement_identities_after_archetype_rename(
 		emit_changed()
 	return changed
 
+## 重命名原型（资源名 + 显示名），并同步仍在用默认命名的实例名 / 显示名。
+func editor_rename_archetype(archetype: GDArchetypeRes, new_asset_name: String, new_display_name: String) -> Dictionary:
+	if archetype == null or not archetypes.has(archetype):
+		return {"ok": false, "changed": 0, "error": "原型不在当前关卡里。"}
+	var clean_name := new_asset_name.strip_edges()
+	var clean_disp := new_display_name.strip_edges()
+	if not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(clean_name, GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME):
+		return {"ok": false, "changed": 0, "error": "名称必须是合法标识符（字母/数字/下划线，不可数字开头）。"}
+	if clean_disp.is_empty():
+		return {"ok": false, "changed": 0, "error": "显示名不能为空。"}
+	for other in archetypes:
+		if other != null and other != archetype and other.resource_name == clean_name:
+			return {"ok": false, "changed": 0, "error": "已存在同名原型：%s" % clean_name}
+	var old_asset := archetype.resource_name
+	var old_display := archetype.display_name
+	archetype.resource_name = clean_name
+	archetype.editor_set_display_name(clean_disp)
+	var changed := editor_refresh_placement_identities_after_archetype_rename(archetype, old_asset, old_display)
+	emit_changed()
+	return {"ok": true, "changed": changed, "error": ""}
+
 # ── Paths (20000+) ──
 
 func editor_add_path(p_type_keyword: int, p_spline: GDPathSystem.SplineData, p_speed: float = 1.0) -> int:
@@ -452,8 +502,8 @@ func _compose_instance_name_from_asset(asset_name: String, inst_id: int) -> Stri
 	if asset_name.is_empty():
 		return "Placement_%d" % inst_id
 	var simplified := asset_name
-	if simplified.begins_with("PlacementArchetype_"):
-		simplified = simplified.substr("PlacementArchetype_".length())
+	if simplified.begins_with(ARCHETYPE_ASSET_PREFIX):
+		simplified = simplified.substr(ARCHETYPE_ASSET_PREFIX.length())
 		var us := simplified.find("_")
 		if us > 0 and us + 1 < simplified.length():
 			simplified = simplified.substr(us + 1)

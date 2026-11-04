@@ -4,6 +4,7 @@ extends Resource
 
 ## 单资产技能数据模型（对应 SkillSO / SkillCost / SkillCooldown / SkillTrackGroup / SkillTrack）
 ## 不变量：unique_name == "Skill_{skill_name}_{skill_id}" == 文件名 == Holder 查找键 == CLI 产物名。
+## cost / cooldown / groups 由内部类组成，Godot 无法直接落盘内部类，统一经 codec_data 存取。
 
 class SkillCost extends Resource:
 	@export var raw_attribute_name: String = "Mana"
@@ -18,7 +19,7 @@ class SkillCost extends Resource:
 			return amount > 0.0
 
 	func _init(p_attr: String = "Mana", p_amount: float = 0.0) -> void:
-		raw_attribute_name = p_attr if p_attr != null else "Mana"
+		raw_attribute_name = p_attr
 		amount = p_amount
 
 
@@ -35,7 +36,7 @@ class SkillCooldown extends Resource:
 			return duration_seconds > 0.0
 
 	func _init(p_group: String = "Default", p_dur: float = 0.0) -> void:
-		raw_cd_group = p_group if p_group != null else "Default"
+		raw_cd_group = p_group
 		duration_seconds = p_dur
 
 
@@ -45,8 +46,7 @@ class SkillTrack extends Resource:
 	@export var clips: Array = [] # Array[GDSkillClips.SkillClip]
 
 	func _init(p_kind: int = GDSkillTypes.SkillTrackKind.EFFECT, p_name: String = "") -> void:
-		kind = p_kind
-		track_name = p_name if not p_name.is_empty() else GDSkillTypes.track_kind_name(p_kind)
+		configure(p_kind, p_name)
 
 	func add_clip(clip: GDSkillClips.SkillClip) -> void:
 		if clip != null:
@@ -62,14 +62,14 @@ class SkillTrackGroup extends Resource:
 	@export var tracks: Array = [] # Array[SkillTrack]
 
 	func _init(p_name: String = "") -> void:
-		group_name = p_name if p_name != null else ""
+		group_name = p_name
 
 	func add_track(track: SkillTrack) -> void:
 		if track != null:
 			tracks.append(track)
 
 	func configure(p_name: String) -> void:
-		group_name = p_name if p_name != null else ""
+		group_name = p_name
 
 
 # ── SkillSO Header & Timeline ──
@@ -79,24 +79,41 @@ class SkillTrackGroup extends Resource:
 @export var display_name: String = ""
 @export_multiline var description: String = ""
 @export var icon: Texture2D = null
-var cost: SkillCost = SkillCost.new()
-var cooldown: SkillCooldown = SkillCooldown.new()
 @export var required_tags: Array = []
 @export var blocked_tags: Array = []
-
 @export var duration_ms: int = 1000
-var groups: Array = []
-@export var serialized_spec: Dictionary = {}
+
+var cost: SkillCost = SkillCost.new()
+var cooldown: SkillCooldown = SkillCooldown.new()
+var groups: Array = [] # Array[SkillTrackGroup]
+
+## 唯一的落盘入口：cost / cooldown / groups 的编码形式。保存、加载、duplicate 均自动经过这里。
+@export_storage var codec_data: Dictionary:
+	get:
+		return codec().encode({"cost": cost, "cooldown": cooldown, "groups": groups})
+	set(value):
+		var data: Dictionary = codec().decode(value)
+		cost = data.get("cost") if data.get("cost") is SkillCost else SkillCost.new()
+		cooldown = data.get("cooldown") if data.get("cooldown") is SkillCooldown else SkillCooldown.new()
+		groups = data.get("groups", []).filter(func(g: Variant) -> bool: return g is SkillTrackGroup)
+
+static var _codec: GDDataCodec = null
 
 var unique_name: String:
 	get:
 		return GDSkillTypes.SkillIdentity.to_asset_name(skill_name, skill_id)
 
+## 技能时间轴数据（本类内部类 + GDSkillClips 全部 Clip / Trajectory）的编解码器。
+static func codec() -> GDDataCodec:
+	if _codec == null:
+		_codec = GDDataCodec.new([GDSkillRes, GDSkillClips])
+	return _codec
+
 func configure_header(p_name: String, p_id: int, p_display_name: String, p_description: String) -> void:
-	skill_name = p_name if p_name != null else ""
+	skill_name = p_name
 	skill_id = maxi(0, p_id)
-	display_name = p_display_name if p_display_name != null else ""
-	description = p_description if p_description != null else ""
+	display_name = p_display_name
+	description = p_description
 	emit_changed()
 
 func set_icon(p_icon: Texture2D) -> void:
@@ -112,8 +129,8 @@ func set_cooldown(p_group: String, p_duration_seconds: float) -> void:
 	emit_changed()
 
 func set_tags(p_required: Array, p_blocked: Array) -> void:
-	required_tags = p_required if p_required != null else []
-	blocked_tags = p_blocked if p_blocked != null else []
+	required_tags = p_required
+	blocked_tags = p_blocked
 	emit_changed()
 
 func set_duration(p_duration_ms: int) -> void:

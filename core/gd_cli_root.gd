@@ -2,17 +2,19 @@
 class_name GDCliRoot
 extends RefCounted
 
-## Core CLI 骨架与原子创建器命令（对应 CliRoot / CliContext / CliResult / AtomCreator / AtomCommands）
+## CLI 基础设施（对应 CliRoot / CliContext / CliResult）+ Core 原子创建器命令（AtomCreator / AtomCommands）。
+## 每个模块 CLI 暴露 commands() -> {命令名: {"run": Callable(CliContext) -> String, "summary": String}}，
+## 由 dispatch() 统一解析参数并分发；命令清单从表推导（见 GdesignerToolsCli）。
 
+## 永远按布尔开关解析、不吞掉后一个参数的选项。
+const FLAG_ONLY := ["dry-run", "quiet"]
+
+## 一次命令调用：命令名 + 位置参数 + `--key value` / `--key=value` 选项 + 布尔开关。
 class CliContext extends RefCounted:
+	var command: String = ""
 	var positionals: Array[String] = []
 	var options: Dictionary = {} # String -> String
-	var flags: Dictionary = {} # String -> bool
-
-	func _init(p_pos: Array[String] = [], p_opts: Dictionary = {}, p_flags: Dictionary = {}) -> void:
-		positionals = p_pos
-		options = p_opts
-		flags = p_flags
+	var flags: Dictionary = {} # String -> true
 
 	func get_option(key: String, fallback: String = "") -> String:
 		return str(options.get(key, fallback))
@@ -20,7 +22,14 @@ class CliContext extends RefCounted:
 	func has_flag(key: String) -> bool:
 		return flags.has(key)
 
+	func ok(payload: Dictionary = {}) -> String:
+		return GDCliRoot.result(command, true, payload)
 
+	func fail(code: String, message: String, payload: Dictionary = {}) -> String:
+		return GDCliRoot.fail(command, code, message, payload)
+
+
+## Core atom.* 命令沿用的结果形状：{"ok", "code", "message", ...data}。
 class CliResult extends RefCounted:
 	var ok: bool = false
 	var code: String = ""
@@ -37,112 +46,88 @@ class CliResult extends RefCounted:
 
 	static func fail(err_code: String, err_msg: String, payload: Dictionary = {}) -> CliResult:
 		var r := CliResult.new()
-		r.ok = false
 		r.code = err_code
 		r.message = err_msg
 		r.data = payload
 		return r
 
 	func to_json_line() -> String:
-		var out := {
-			"ok": ok,
-			"code": code,
-			"message": message,
-		}
-		for k in data.keys():
-			out[k] = data[k]
+		var out := {"ok": ok, "code": code, "message": message}
+		out.merge(data, true)
 		return JSON.stringify(out)
 
 
-static var _registry: Dictionary = {} # command_name -> {"callable": Callable, "summary": String}
-static var _builtins_registered: bool = false
-
-static func _ensure_builtins() -> void:
-	if _builtins_registered:
-		return
-	_builtins_registered = true
-	register_command(
-		"atom.create",
-		Callable(GDCliRoot, "_cmd_atom_create"),
-		"创建 AtomBase 脚本与 AtomTemplateRes 模板资产 (--name --type --script-dir --template-dir)"
-	)
-	register_command(
-		"atom.list-templates",
-		Callable(GDCliRoot, "_cmd_atom_list_templates"),
-		"列出工程内全部 AtomTemplateRes 模板"
-	)
+## 运行时额外注册的命令（项目自定义扩展）；handler 接收 CliContext，返回 JSON 字符串或 CliResult。
+static var _registry: Dictionary = {}
 
 static func register_command(cmd_name: String, handler: Callable, summary: String = "") -> void:
-	_registry[cmd_name] = {
-		"callable": handler,
-		"summary": summary,
+	_registry[cmd_name] = {"run": handler, "summary": summary}
+
+## Core 模块命令表：atom.* + register_command 注册的命令。
+static func commands() -> Dictionary:
+	var table := {
+		"atom.create": {"run": _cmd_atom_create, "summary": "创建 AtomBase 脚本与 AtomTemplateRes 模板资产 (--name --type --script-dir --template-dir)"},
+		"atom.list-templates": {"run": _cmd_atom_list_templates, "summary": "列出工程内全部 AtomTemplateRes 模板"},
 	}
+	table.merge(_registry, true)
+	return table
 
-static func get_registered_commands() -> Dictionary:
-	_ensure_builtins()
-	return _registry
+## 在命令表中查找并执行命令；未知命令返回 unknown-command。
+static func dispatch(table: Dictionary, command: String, args: Array) -> String:
+	if not table.has(command):
+		return fail(command, "unknown-command", "未知命令：%s（输入 help 查看全部命令）" % command)
+	var ctx := parse_args(args)
+	ctx.command = command
+	var out: Variant = (table[command]["run"] as Callable).call(ctx)
+	return out.to_json_line() if out is CliResult else str(out)
 
-static func execute(argv: Array) -> CliResult:
-	_ensure_builtins()
-	if argv == null or argv.is_empty():
-		return CliResult.fail("BAD_ARG", "empty argv")
-	var cmd_name := str(argv[0])
-	if not _registry.has(cmd_name):
-		return CliResult.fail("NOT_FOUND", "command '%s' not registered" % cmd_name)
-	var ctx := parse_args(argv, 1)
-	var entry: Dictionary = _registry[cmd_name]
-	var cb: Callable = entry["callable"]
-	return cb.call(ctx)
-
-static func execute_line(command_line: String) -> CliResult:
-	var parts := split_command_line(command_line)
-	return execute(parts)
-
-static func parse_args(argv: Array, start_index: int = 1) -> CliContext:
-	var pos: Array[String] = []
-	var opts: Dictionary = {}
-	var flgs: Dictionary = {}
-	var i := start_index
-	while i < argv.size():
-		var a := str(argv[i])
-		if a.begins_with("--"):
-			var eq := a.find("=")
-			if eq > 2:
-				var key := a.substr(2, eq - 2)
-				var val := a.substr(eq + 1)
-				opts[key] = val
-			else:
-				var key := a.substr(2)
-				if i + 1 < argv.size() and not str(argv[i + 1]).begins_with("-"):
-					i += 1
-					opts[key] = str(argv[i])
-				else:
-					flgs[key] = true
-		else:
-			pos.append(a)
+static func parse_args(args: Array) -> CliContext:
+	var ctx := CliContext.new()
+	var i := 0
+	while i < args.size():
+		var a := str(args[i])
 		i += 1
-	return CliContext.new(pos, opts, flgs)
+		if not a.begins_with("--"):
+			ctx.positionals.append(a)
+			continue
+		var key := a.substr(2)
+		var eq := key.find("=")
+		if eq > 0:
+			ctx.options[key.substr(0, eq)] = key.substr(eq + 1)
+		elif key not in FLAG_ONLY and i < args.size() and not str(args[i]).begins_with("--"):
+			ctx.options[key] = str(args[i])
+			i += 1
+		else:
+			ctx.flags[key] = true
+	return ctx
 
 static func split_command_line(input: String) -> Array[String]:
 	var parts: Array[String] = []
-	if input.strip_edges().is_empty():
-		return parts
 	var current := ""
 	var in_quotes := false
-	for i in range(input.length()):
-		var ch := input[i]
+	for ch in input:
 		if ch == "\"":
 			in_quotes = not in_quotes
-			continue
-		if not in_quotes and (ch == " " or ch == "\t"):
+		elif not in_quotes and (ch == " " or ch == "\t"):
 			if not current.is_empty():
 				parts.append(current)
 				current = ""
-			continue
-		current += ch
+		else:
+			current += ch
 	if not current.is_empty():
 		parts.append(current)
 	return parts
+
+## 模块命令统一的 JSON 结果：{"ok", "command", ...payload}。
+static func result(command: String, ok: bool, payload: Dictionary = {}) -> String:
+	var out := {"ok": ok, "command": command}
+	out.merge(payload, true)
+	return JSON.stringify(out)
+
+static func fail(command: String, code: String, message: String, payload: Dictionary = {}) -> String:
+	var out := {"code": code, "message": message}
+	out.merge(payload, true)
+	return result(command, false, out)
 
 
 ## AtomCreator 逻辑（脚本 + AtomTemplateRes 生成）
@@ -201,18 +186,7 @@ class AtomCreator extends RefCounted:
 		}
 
 	static func is_valid_type_name(s: String) -> bool:
-		if s.is_empty():
-			return false
-		var c0 := s.unicode_at(0)
-		var is_letter := (c0 >= 65 and c0 <= 90) or (c0 >= 97 and c0 <= 122) or c0 == 95
-		if not is_letter:
-			return false
-		for i in range(1, s.length()):
-			var c := s.unicode_at(i)
-			var ok := (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or (c >= 48 and c <= 57) or c == 95
-			if not ok:
-				return false
-		return true
+		return s.is_valid_ascii_identifier()
 
 	static func ensure_dir(res_dir: String) -> void:
 		var abs_dir := ProjectSettings.globalize_path(res_dir)
@@ -231,28 +205,20 @@ class AtomCreator extends RefCounted:
 
 static func _cmd_atom_create(ctx: CliContext) -> CliResult:
 	var name_opt := ctx.get_option("name")
-	var type_str := ctx.get_option("type", "Logic")
-	var script_dir := ctx.get_option("script-dir")
-	var template_dir := ctx.get_option("template-dir", AtomCreator.DEFAULT_TEMP_DIR)
-	var display := ctx.get_option("display", name_opt)
-	var desc := ctx.get_option("desc", "")
-
 	var at := GDCoreTypes.AtomType.LOGIC
-	match type_str.to_lower():
+	match ctx.get_option("type", "Logic").to_lower():
 		"visual":
 			at = GDCoreTypes.AtomType.VISUAL
 		"ui":
 			at = GDCoreTypes.AtomType.UI
-		_:
-			at = GDCoreTypes.AtomType.LOGIC
 
 	var res := AtomCreator.create_atom({
 		"script_name": name_opt,
-		"display_name": display,
-		"description": desc,
+		"display_name": ctx.get_option("display", name_opt),
+		"description": ctx.get_option("desc"),
 		"atom_type": at,
-		"script_dir": script_dir,
-		"template_dir": template_dir,
+		"script_dir": ctx.get_option("script-dir"),
+		"template_dir": ctx.get_option("template-dir", AtomCreator.DEFAULT_TEMP_DIR),
 	})
 	if not bool(res.get("ok", false)):
 		return CliResult.fail(str(res.get("error_code", "FAIL")), str(res.get("error_message", "failed")))
@@ -262,9 +228,8 @@ static func _cmd_atom_create(ctx: CliContext) -> CliResult:
 	})
 
 static func _cmd_atom_list_templates(_ctx: CliContext) -> CliResult:
-	var templates := find_all_atom_templates()
 	var items: Array = []
-	for t in templates:
+	for t in find_all_atom_templates():
 		items.append({
 			"displayName": t.display_name,
 			"atomType": GDCoreTypes.atom_type_name(t.atom_type),
@@ -290,10 +255,9 @@ static func _scan_templates(dir_path: String, out: Array[GDEntityAtomSystem.Atom
 			if dir.current_is_dir():
 				if fname != "GdesignerTools":
 					_scan_templates(full, out)
-			elif fname.ends_with(".tres") or fname.ends_with(".res"):
-				if fname.begins_with("AtomTemplate_"):
-					var loaded := ResourceLoader.load(full)
-					if loaded is GDEntityAtomSystem.AtomTemplateRes:
-						out.append(loaded)
+			elif (fname.ends_with(".tres") or fname.ends_with(".res")) and fname.begins_with("AtomTemplate_"):
+				var loaded := ResourceLoader.load(full)
+				if loaded is GDEntityAtomSystem.AtomTemplateRes:
+					out.append(loaded)
 		fname = dir.get_next()
 	dir.list_dir_end()

@@ -146,28 +146,27 @@ class PathInstance extends Resource:
 	func with_overrides(p_overrides: Array) -> PathInstance:
 		var copy := _clone_shell()
 		copy.attribute_overrides.clear()
-		if p_overrides != null:
-			for ov in p_overrides:
-				if ov is GDPlacementData.PlacementAttributeOverride:
-					copy.attribute_overrides.append(ov.clone_override())
+		for ov in p_overrides:
+			if ov is GDPlacementData.PlacementAttributeOverride:
+				copy.attribute_overrides.append(ov.clone_override())
 		return copy
 
 	func with_name(new_name: String) -> PathInstance:
 		var copy := _clone_shell()
-		copy.path_name = new_name if new_name != null else ""
+		copy.path_name = new_name
 		return copy
 
 	func with_display_name(new_display_name: String) -> PathInstance:
 		var copy := _clone_shell()
-		copy.display_name = new_display_name if new_display_name != null else ""
+		copy.display_name = new_display_name
 		return copy
 
 	func editor_update_spline(p_spline: SplineData) -> void:
 		spline = p_spline.clone_spline() if p_spline != null else SplineData.new()
 
 	func editor_init_path_identity(p_name: String, p_display_name: String) -> void:
-		path_name = p_name if p_name != null else ""
-		display_name = p_display_name if p_display_name != null else ""
+		path_name = p_name
+		display_name = p_display_name
 
 	func editor_rewrite_path_id(new_path_id: int) -> void:
 		path_id = new_path_id

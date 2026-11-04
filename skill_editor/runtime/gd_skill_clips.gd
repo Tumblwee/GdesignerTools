@@ -82,7 +82,7 @@ class SkillClip extends Resource:
 		duration_ms = maxi(0, p_duration_ms)
 
 	func set_display_name(p_display_name: String) -> void:
-		display_name = p_display_name if p_display_name != null else ""
+		display_name = p_display_name
 
 	func get_clip_short_name() -> String:
 		return "Skill"
@@ -100,7 +100,7 @@ class PlayAnimationClip extends SkillClip:
 		return "PlayAnimation"
 
 	func configure(p_state_name: String, p_crossfade_seconds: float) -> void:
-		state_name = p_state_name if p_state_name != null else ""
+		state_name = p_state_name
 		crossfade_seconds = clampf(p_crossfade_seconds, 0.0, 2.0)
 
 
@@ -265,9 +265,9 @@ class SkillCustomEvent extends Resource:
 	@export var vector_param: Vector3 = Vector3.ZERO
 
 	func configure(p_event_id: String, p_float: float, p_string: String, p_vec: Vector3) -> void:
-		event_id = p_event_id if p_event_id != null else ""
+		event_id = p_event_id
 		float_param = p_float
-		string_param = p_string if p_string != null else ""
+		string_param = p_string
 		vector_param = p_vec
 
 
@@ -281,7 +281,7 @@ class PushEventClip extends SkillClip:
 		return true
 
 	func configure(p_events: Array[SkillCustomEvent]) -> void:
-		events = p_events if p_events != null else []
+		events = p_events
 
 
 ## 11. SpawnProjectileClip (Logic rank 0)
@@ -317,7 +317,7 @@ class SpawnProjectileClip extends SkillClip:
 class DealDamageClip extends SkillClip:
 	@export var base_damage: int = 0
 	@export var coefficient: float = 1.0
-	@export var damage_tag: GDSkillTypes.GameplayTagRes = null
+	@export var damage_tag: GDGameplayTagRes = null
 
 	func get_clip_short_name() -> String:
 		return "DealDamage"
@@ -325,7 +325,7 @@ class DealDamageClip extends SkillClip:
 	func is_logic_clip() -> bool:
 		return true
 
-	func configure(p_base_damage: int, p_coefficient: float, p_damage_tag: GDSkillTypes.GameplayTagRes = null) -> void:
+	func configure(p_base_damage: int, p_coefficient: float, p_damage_tag: GDGameplayTagRes = null) -> void:
 		base_damage = p_base_damage
 		coefficient = p_coefficient
 		damage_tag = p_damage_tag
@@ -335,7 +335,7 @@ class DealDamageClip extends SkillClip:
 class CheckHitClip extends SkillClip:
 	@export var shape: int = GDSkillTypes.SkillHitShapeKind.SPHERE
 	@export var radius_or_half_extent: Vector3 = Vector3.ONE
-	@export var filter_tag: GDSkillTypes.GameplayTagRes = null
+	@export var filter_tag: GDGameplayTagRes = null
 
 	func get_clip_short_name() -> String:
 		return "CheckHit"
@@ -343,7 +343,7 @@ class CheckHitClip extends SkillClip:
 	func is_logic_clip() -> bool:
 		return true
 
-	func configure(p_shape: int, p_radius_or_half_extent: Vector3, p_filter_tag: GDSkillTypes.GameplayTagRes = null) -> void:
+	func configure(p_shape: int, p_radius_or_half_extent: Vector3, p_filter_tag: GDGameplayTagRes = null) -> void:
 		shape = p_shape
 		radius_or_half_extent = p_radius_or_half_extent
 		filter_tag = p_filter_tag
@@ -351,7 +351,7 @@ class CheckHitClip extends SkillClip:
 
 ## 14. ApplyEffectClip (Logic rank 0)
 class ApplyEffectClip extends SkillClip:
-	@export var effect: GDSkillTypes.GameplayEffectRes = null
+	@export var effect: GDGameplayEffectRes = null
 	@export var is_instant: bool = false
 
 	func get_clip_short_name() -> String:
@@ -360,7 +360,7 @@ class ApplyEffectClip extends SkillClip:
 	func is_logic_clip() -> bool:
 		return true
 
-	func configure(p_effect: GDSkillTypes.GameplayEffectRes, p_is_instant: bool) -> void:
+	func configure(p_effect: GDGameplayEffectRes, p_is_instant: bool) -> void:
 		effect = p_effect
 		is_instant = p_is_instant
 
@@ -381,5 +381,5 @@ class TeleportClip extends SkillClip:
 	func configure(p_mode: int, p_offset_from_target: float, p_recall_key: String, p_align_to_ground: bool) -> void:
 		mode = p_mode
 		offset_from_target = maxf(0.0, p_offset_from_target)
-		origin_recall_key = p_recall_key if p_recall_key != null else "Default"
+		origin_recall_key = p_recall_key
 		align_to_ground = p_align_to_ground

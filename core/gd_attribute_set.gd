@@ -272,11 +272,10 @@ class AttributeSet extends RefCounted:
 		_raise_if_changed(kind, old_num, old_boxed, next_val.current, next_val.current_boxed, reason)
 
 	func _raise_if_changed(kind: int, old_num: float, old_boxed: Variant, new_num: float, new_boxed: Variant, reason: String) -> void:
-		var safe_reason := reason if reason != null else ""
 		if old_boxed != new_boxed:
-			attribute_value_changed.emit(kind, old_boxed, new_boxed, safe_reason)
+			attribute_value_changed.emit(kind, old_boxed, new_boxed, reason)
 		if not is_equal_approx(old_num, new_num):
-			attribute_changed.emit(kind, old_num, new_num, safe_reason)
+			attribute_changed.emit(kind, old_num, new_num, reason)
 
 	func _warn_unregistered_once(kind: int) -> void:
 		if not _warned_kinds.has(kind):

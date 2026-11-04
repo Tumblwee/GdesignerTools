@@ -211,12 +211,12 @@ class GuideSignalKeys extends RefCounted:
 	const SEPARATOR := ":"
 
 	static func compose(key: String, arg: String = "") -> String:
-		if key == null or key.is_empty():
+		if key.is_empty():
 			return ""
-		return key if (arg == null or arg.is_empty()) else (key + SEPARATOR + arg)
+		return key if arg.is_empty() else key + SEPARATOR + arg
 
 	static func split(full_key: String) -> Dictionary:
-		if full_key == null or full_key.is_empty():
+		if full_key.is_empty():
 			return {"key": "", "arg": ""}
 		var idx := full_key.find(SEPARATOR)
 		if idx < 0:
@@ -224,7 +224,7 @@ class GuideSignalKeys extends RefCounted:
 		return {"key": full_key.substr(0, idx), "arg": full_key.substr(idx + 1)}
 
 	static func matches(published: String, expected: String) -> bool:
-		if published == null or published.is_empty() or expected == null or expected.is_empty():
+		if published.is_empty() or expected.is_empty():
 			return false
 		if expected.find(SEPARATOR) >= 0:
 			return published == expected
@@ -245,14 +245,14 @@ class GuideEventRef extends Resource:
 
 	var is_empty: bool:
 		get:
-			return event_name == null or event_name.is_empty()
+			return event_name.is_empty()
 
 	func _init(p_name: String = "", p_arg: String = "") -> void:
-		event_name = p_name if p_name != null else ""
-		arg = p_arg if p_arg != null else ""
+		event_name = p_name
+		arg = p_arg
 
 	static func parse(full_key: String) -> GuideEventRef:
-		if full_key == null or full_key.is_empty():
+		if full_key.is_empty():
 			return GuideEventRef.new()
 		var sp := GuideSignalKeys.split(full_key)
 		return GuideEventRef.new(str(sp["key"]), str(sp["arg"]))
@@ -277,11 +277,11 @@ class GuideTargetRef extends Resource:
 		p_wait_panel: String = ""
 	) -> void:
 		kind = p_kind
-		panel = p_panel if p_panel != null else ""
-		widget = p_widget if p_widget != null else ""
-		world_key = p_world_key if p_world_key != null else ""
-		rule = p_rule if p_rule != null else ""
-		wait_panel = p_wait_panel if p_wait_panel != null else ""
+		panel = p_panel
+		widget = p_widget
+		world_key = p_world_key
+		rule = p_rule
+		wait_panel = p_wait_panel
 
 	static func ui(p_panel: String, p_widget: String) -> GuideTargetRef:
 		return GuideTargetRef.new(GuideTargetKind.UI_WIDGET, p_panel, p_widget)
@@ -331,17 +331,17 @@ class GuideBlackboard extends RefCounted:
 			return _values
 
 	func try_get(key: String) -> Dictionary:
-		if key == null or key.is_empty() or not _values.has(key):
+		if key.is_empty() or not _values.has(key):
 			return {"ok": false, "value": ""}
 		return {"ok": true, "value": str(_values[key])}
 
 	func set_value(key: String, val: String) -> void:
-		if key == null or key.is_empty():
+		if key.is_empty():
 			return
-		_values[key] = val if val != null else ""
+		_values[key] = val
 
 	func remove(key: String) -> bool:
-		return not (key == null or key.is_empty()) and _values.erase(key)
+		return not key.is_empty() and _values.erase(key)
 
 	func clear() -> void:
 		_values.clear()
@@ -377,7 +377,7 @@ class GuideValue extends Resource:
 	static func from_string(v: String) -> GuideValue:
 		var gv := GuideValue.new()
 		gv.type = GuideValueType.STRING
-		gv.string_value = v if v != null else ""
+		gv.string_value = v
 		return gv
 
 	var is_numeric: bool:
@@ -393,7 +393,7 @@ class GuideValue extends Resource:
 			GuideValueType.BOOL: return "是" if bool_value else "否"
 			GuideValueType.INT: return str(int_value)
 			GuideValueType.FLOAT: return str(float_value)
-			_: return string_value if string_value != null else ""
+			_: return string_value
 
 
 class GuideConditionCall extends Resource:
@@ -401,7 +401,7 @@ class GuideConditionCall extends Resource:
 	@export var arg: GuideValue = GuideValue.new()
 
 	func _init(p_id: String = "", p_arg: GuideValue = null) -> void:
-		condition_id = p_id if p_id != null else ""
+		condition_id = p_id
 		arg = p_arg if p_arg != null else GuideValue.new()
 
 
@@ -445,7 +445,7 @@ class GuideConditionResult extends RefCounted:
 		p_has_values: bool = false
 	) -> void:
 		satisfied = p_satisfied
-		error = p_error if p_error != null else ""
+		error = p_error
 		left = p_left
 		right = p_right
 		has_values = p_has_values
@@ -518,7 +518,7 @@ class GuideSignal extends RefCounted:
 	) -> void:
 		phase = p_phase
 		out_port = p_out_port
-		log = p_log if p_log != null else ""
+		log = p_log
 		stalled = p_stalled
 		ends_graph = p_ends_graph
 		exit_reason = p_exit_reason

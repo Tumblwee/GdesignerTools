@@ -28,12 +28,6 @@ var has_valid_custom_instance_id_range: bool:
 	get:
 		return use_custom_instance_id_range and instance_id_min > 0 and instance_id_max >= instance_id_min
 
-func editor_init_for_tests(p_stable_id: int, p_display_name: String, p_entity_address: String) -> void:
-	stable_id = p_stable_id
-	display_name = p_display_name
-	manufactured_prefab_address = p_entity_address
-	preview_prefab_address = ""
-
 func editor_bind_stable_id(p_stable_id: int) -> void:
 	stable_id = p_stable_id
 	emit_changed()
@@ -44,7 +38,7 @@ func editor_set_override_base(p_base: GDArchetypeRes) -> void:
 	emit_changed()
 
 func editor_set_display_name(p_display_name: String) -> void:
-	display_name = p_display_name if p_display_name != null else ""
+	display_name = p_display_name
 	emit_changed()
 
 func editor_set_archetype_type_stable_id(p_type_stable_id: int) -> void:
@@ -58,8 +52,8 @@ func editor_set_custom_instance_id_range(p_use: bool, p_min: int, p_max: int) ->
 	emit_changed()
 
 func editor_set_prefab_addresses(p_entity_addr: String, p_preview_addr: String) -> void:
-	manufactured_prefab_address = p_entity_addr if p_entity_addr != null else ""
-	preview_prefab_address = p_preview_addr if p_preview_addr != null else ""
+	manufactured_prefab_address = p_entity_addr
+	preview_prefab_address = p_preview_addr
 	emit_changed()
 
 func editor_init_with_addresses(
@@ -69,13 +63,13 @@ func editor_init_with_addresses(
 	p_preview_addr: String
 ) -> void:
 	stable_id = p_stable_id
-	display_name = p_display_name if p_display_name != null else ""
-	manufactured_prefab_address = p_entity_addr if p_entity_addr != null else ""
-	preview_prefab_address = p_preview_addr if p_preview_addr != null else ""
+	display_name = p_display_name
+	manufactured_prefab_address = p_entity_addr
+	preview_prefab_address = p_preview_addr
 	emit_changed()
 
 func editor_set_custom_attributes(defs: Array[GDCustomAttributeDef]) -> void:
-	custom_attributes = defs if defs != null else []
+	custom_attributes = defs
 	emit_changed()
 
 func editor_resolve_manufactured_prefab() -> PackedScene:

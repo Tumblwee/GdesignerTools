@@ -11,12 +11,12 @@ extends RefCounted
 class GuideBreakpoints extends RefCounted:
 	static var _by_graph: Dictionary = {} # GuideGraphRes -> Dictionary (node_id -> true)
 
-	static func contains(graph: GDGuideGraphAndValidator.GuideGraphRes, node_id: int) -> bool:
+	static func contains(graph: GDGuideGraphRes, node_id: int) -> bool:
 		if graph == null or not _by_graph.has(graph):
 			return false
 		return (_by_graph[graph] as Dictionary).has(node_id)
 
-	static func set_breakpoint(graph: GDGuideGraphAndValidator.GuideGraphRes, node_id: int, enabled: bool) -> void:
+	static func set_breakpoint(graph: GDGuideGraphRes, node_id: int, enabled: bool) -> void:
 		if graph == null or node_id <= 0:
 			return
 		if not _by_graph.has(graph):
@@ -27,10 +27,10 @@ class GuideBreakpoints extends RefCounted:
 		else:
 			map.erase(node_id)
 
-	static func toggle(graph: GDGuideGraphAndValidator.GuideGraphRes, node_id: int) -> void:
+	static func toggle(graph: GDGuideGraphRes, node_id: int) -> void:
 		set_breakpoint(graph, node_id, not contains(graph, node_id))
 
-	static func get_all(graph: GDGuideGraphAndValidator.GuideGraphRes) -> Array[int]:
+	static func get_all(graph: GDGuideGraphRes) -> Array[int]:
 		var out: Array[int] = []
 		if graph != null and _by_graph.has(graph):
 			for k in (_by_graph[graph] as Dictionary).keys():
@@ -38,7 +38,7 @@ class GuideBreakpoints extends RefCounted:
 		out.sort()
 		return out
 
-	static func clear(graph: GDGuideGraphAndValidator.GuideGraphRes) -> void:
+	static func clear(graph: GDGuideGraphRes) -> void:
 		if graph != null:
 			_by_graph.erase(graph)
 
@@ -58,7 +58,7 @@ class GuideDebugRegistry extends RefCounted:
 			_sessions.erase(session)
 			version += 1
 
-	static func find_by_graph(graph: GDGuideGraphAndValidator.GuideGraphRes) -> RefCounted:
+	static func find_by_graph(graph: GDGuideGraphRes) -> RefCounted:
 		if graph == null:
 			return null
 		var fallback: RefCounted = null
@@ -108,7 +108,7 @@ class GuideTraceEvent extends RefCounted:
 		port = p_port
 		to_node_id = p_to_node_id
 		time_since_start = p_time
-		message = p_msg if p_msg != null else ""
+		message = p_msg
 
 	func format_trace() -> String:
 		var head := "#%d %.2fs " % [seq, time_since_start]
@@ -175,7 +175,7 @@ class GuideRunnerOptions extends RefCounted:
 
 class GuideRun extends RefCounted:
 	var run_id: int = 0
-	var graph: GDGuideGraphAndValidator.GuideGraphRes = null
+	var graph: GDGuideGraphRes = null
 	var graph_id: int = 0
 	var graph_name: String = ""
 	var force: bool = false
@@ -205,7 +205,7 @@ class GuideRun extends RefCounted:
 
 	func _init(
 		p_run_id: int,
-		p_graph: GDGuideGraphAndValidator.GuideGraphRes,
+		p_graph: GDGuideGraphRes,
 		p_force: bool,
 		p_bb: GDGuideData.GuideBlackboard = null
 	) -> void:
@@ -285,7 +285,7 @@ class GuideContext extends RefCounted:
 			runner.host.progress.set_checkpoint(run.graph_id, cp_name)
 			runner.host.progress.flush()
 
-	func start_subgraph_runner(sub_graph: GDGuideGraphAndValidator.GuideGraphRes) -> GuideRunner:
+	func start_subgraph_runner(sub_graph: GDGuideGraphRes) -> GuideRunner:
 		if runner.options.subgraph_depth >= 16:
 			return null
 		if sub_graph == run.graph:
@@ -314,7 +314,7 @@ class GuideRunner extends RefCounted:
 
 	static var _next_run_id: int = 0
 
-	var host: GDGuideHostAndConditions.GuideHost = null
+	var host: GDGuideServices.GuideHost = null
 	var options: GuideRunnerOptions = null
 	var current_run: GuideRun = null
 	var is_disposed: bool = false
@@ -336,14 +336,14 @@ class GuideRunner extends RefCounted:
 	var _debug_start_node: bool = false
 	var _signal_connected: bool = false
 
-	func _init(p_host: GDGuideHostAndConditions.GuideHost, p_options: GuideRunnerOptions = null) -> void:
-		host = p_host if p_host != null else GDGuideHostAndConditions.GuideHost.new()
+	func _init(p_host: GDGuideServices.GuideHost, p_options: GuideRunnerOptions = null) -> void:
+		host = p_host if p_host != null else GDGuideServices.GuideHost.new()
 		options = p_options if p_options != null else GuideRunnerOptions.new()
 		_ensure_hooks()
 		if options.register_debug_session:
 			GuideDebugRegistry.register_session(self)
 
-	var graph: GDGuideGraphAndValidator.GuideGraphRes:
+	var graph: GDGuideGraphRes:
 		get:
 			return current_run.graph if current_run != null else null
 
@@ -376,13 +376,13 @@ class GuideRunner extends RefCounted:
 		return current_run.exit_message if current_run != null else ""
 
 	func try_start(
-		p_graph: GDGuideGraphAndValidator.GuideGraphRes,
+		p_graph: GDGuideGraphRes,
 		resume_node_id: int = 0,
 		force: bool = false
 	) -> bool:
 		if is_disposed or p_graph == null:
 			return false
-		if p_graph.schema_version != GDGuideGraphAndValidator.GuideGraphRes.CURRENT_SCHEMA_VERSION:
+		if p_graph.schema_version != GDGuideGraphRes.CURRENT_SCHEMA_VERSION:
 			GDGameLogger.log_warning("[Guide] 数据版本不支持，请先迁移到 v2")
 			return false
 
@@ -415,7 +415,7 @@ class GuideRunner extends RefCounted:
 		_record_trace(run, GDGuideData.GuideTraceKind.RUN_STARTED, 0, GDGuideData.GuideNodePhase.IDLE, GDGuideData.GuidePortKind.EXEC_OUT, 0, "强制启动" if force else "启动")
 
 		if options.validate_on_start:
-			var report := GDGuideGraphAndValidator.GuideGraphValidator.validate(p_graph, [], host.conditions)
+			var report := GDGuideValidation.GuideGraphValidator.validate(p_graph, [], host.conditions)
 			if report.has_errors:
 				graph_started.emit({"graph_id": run.graph_id, "run_id": run.run_id, "start_node_id": 0})
 				_finish(run, GDGuideData.GuideExitReason.FAILED, "图校验失败：" + report.summarize(3))
@@ -432,6 +432,13 @@ class GuideRunner extends RefCounted:
 
 		_enter_node(run, start_id, _input_seq)
 		return true
+
+	## 调试用：从任意从入口可达的节点开跑，不要求它是续跑点。
+	func try_start_from(p_graph: GDGuideGraphRes, node_id: int) -> bool:
+		_debug_start_node = true
+		var started := try_start(p_graph, node_id, true)
+		_debug_start_node = false
+		return started
 
 	func stop(reason: int = GDGuideData.GuideExitReason.ABORTED) -> void:
 		if is_running:
@@ -535,7 +542,7 @@ class GuideRunner extends RefCounted:
 		snap.is_finished = r.is_finished
 		snap.exit_reason = r.exit_reason
 		snap.exit_message = r.exit_message
-		snap.active_node_ids = [r.active_node_id] if (r.is_running and r.active_node_id > 0) else []
+		snap.active_node_ids.assign([r.active_node_id] if (r.is_running and r.active_node_id > 0) else [])
 		snap.phases = r.phases.duplicate()
 		if is_paused and r.active_node_id > 0:
 			snap.phases[r.active_node_id] = GDGuideData.GuideNodePhase.PAUSED
@@ -578,7 +585,7 @@ class GuideRunner extends RefCounted:
 	func _is_live(run: GuideRun) -> bool:
 		return run != null and run == current_run and run.is_running
 
-	func _can_auto_start(p_graph: GDGuideGraphAndValidator.GuideGraphRes) -> Dictionary:
+	func _can_auto_start(p_graph: GDGuideGraphRes) -> Dictionary:
 		if not p_graph.enabled:
 			return {"ok": false, "reason": "图未启用"}
 		if host.progress != null and host.progress.is_graph_completed(p_graph.graph_id):
@@ -892,8 +899,8 @@ class GuideRunner extends RefCounted:
 
 class GuideTriggerSystem extends RefCounted:
 	var runner: GuideRunner = null
-	var graphs: Array[GDGuideGraphAndValidator.GuideGraphRes] = []
-	var eligible_graphs: Array[GDGuideGraphAndValidator.GuideGraphRes] = []
+	var graphs: Array[GDGuideGraphRes] = []
+	var eligible_graphs: Array[GDGuideGraphRes] = []
 	var diagnostics: Dictionary = {} # graph_id -> {"event": String, "message": String, "rows": Array}
 
 	var _by_event: Dictionary = {} # event_key -> Array[GuideGraphRes]
@@ -905,9 +912,9 @@ class GuideTriggerSystem extends RefCounted:
 	func _init(p_runner: GuideRunner, p_graphs: Array) -> void:
 		runner = p_runner
 		for g in p_graphs:
-			if g is GDGuideGraphAndValidator.GuideGraphRes:
+			if g is GDGuideGraphRes:
 				graphs.append(g)
-		graphs.sort_custom(func(a: GDGuideGraphAndValidator.GuideGraphRes, b: GDGuideGraphAndValidator.GuideGraphRes) -> bool:
+		graphs.sort_custom(func(a: GDGuideGraphRes, b: GDGuideGraphRes) -> bool:
 			if a.priority == b.priority:
 				return a.graph_id < b.graph_id
 			return a.priority > b.priority
@@ -944,7 +951,7 @@ class GuideTriggerSystem extends RefCounted:
 			return {"ok": false, "message": "引导服务已关闭"}
 		if runner.is_running or _dispatching:
 			return {"ok": false, "message": "已有引导正在运行，请先完成或结束当前引导"}
-		var target_g: GDGuideGraphAndValidator.GuideGraphRes = null
+		var target_g: GDGuideGraphRes = null
 		for g in graphs:
 			if g != null and g.graph_id == p_graph_id:
 				target_g = g
@@ -957,7 +964,7 @@ class GuideTriggerSystem extends RefCounted:
 		var msg := ("已发送 %s，触发「%s」" % [entry.trigger_event.key, target_g.display_name]) if started else "触发未启动，请检查运行轨迹和图校验结果"
 		return {"ok": started, "message": msg}
 
-	func check_preconditions(g: GDGuideGraphAndValidator.GuideGraphRes, sig: String = "") -> GDGuideData.GuideConditionResult:
+	func check_preconditions(g: GDGuideGraphRes, sig: String = "") -> GDGuideData.GuideConditionResult:
 		var entry := g.find_atom(g.find_entry_id()) as GDGuideAtoms.EntryAtom
 		if entry == null:
 			diagnostics[g.graph_id] = {"event": sig, "message": "缺少入口", "rows": []}
@@ -982,13 +989,13 @@ class GuideTriggerSystem extends RefCounted:
 		_by_event.clear()
 		_pending.clear()
 
-	func _can_trigger(g: GDGuideGraphAndValidator.GuideGraphRes) -> Dictionary:
+	func _can_trigger(g: GDGuideGraphRes) -> Dictionary:
 		if g == null:
 			return {"ok": false, "reason": "当前引导不在已加载候选图中"}
 		var p := runner.host.progress
 		if not g.enabled:
 			return {"ok": false, "reason": "引导未启用"}
-		if g.schema_version != GDGuideGraphAndValidator.GuideGraphRes.CURRENT_SCHEMA_VERSION:
+		if g.schema_version != GDGuideGraphRes.CURRENT_SCHEMA_VERSION:
 			return {"ok": false, "reason": "引导图需要先迁移数据版本"}
 		if p != null and p.is_graph_completed(g.graph_id):
 			return {"ok": false, "reason": "该引导已完成"}
@@ -1008,7 +1015,7 @@ class GuideTriggerSystem extends RefCounted:
 			return {"ok": true, "reason": ""}
 		return {"ok": false, "reason": pre.error if not pre.error.is_empty() else "前置条件未满足"}
 
-	func _resume_node(g: GDGuideGraphAndValidator.GuideGraphRes) -> int:
+	func _resume_node(g: GDGuideGraphRes) -> int:
 		var nid := runner.host.progress.get_resume_node_id(g.graph_id) if runner.host.progress != null else 0
 		var a := g.find_atom(nid)
 		return nid if (a != null and a.is_resume_point and g.is_reachable_from_entry(nid)) else 0
@@ -1041,7 +1048,7 @@ class GuideTriggerSystem extends RefCounted:
 			if _dispatch_graph(g, sig):
 				return
 
-	func _dispatch_graph(g: GDGuideGraphAndValidator.GuideGraphRes, sig: String) -> bool:
+	func _dispatch_graph(g: GDGuideGraphRes, sig: String) -> bool:
 		if not bool(_can_trigger(g).get("ok", false)):
 			refresh_candidates()
 			return false
