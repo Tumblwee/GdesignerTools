@@ -2,7 +2,7 @@
 class_name GDLevelSceneDrop
 extends RefCounted
 
-## 把关卡原型拖进 Godot 正在编辑的场景。
+## 把关卡原型拖进该关卡专属的编辑场景。
 ##
 ## Control 拖拽只在进程内有效，而 3D/2D 主视口只接受 files / nodes / resource，不认识原型。
 ## 因此分两步：
@@ -150,6 +150,9 @@ static func begin(archetype: GDArchetypeRes, layout: GDLevelSceneRes) -> Diction
 	cancel()
 	if archetype == null:
 		return {}
+	if Engine.is_editor_hint() and not can_edit(layout):
+		_set_status("请先打开当前关卡的编辑场景，再摆放原型。", false)
+		return {}
 	session = DragSession.new(archetype, layout)
 	_set_status("拖拽中：%s。移到 3D 或 2D 视口后松开。" % session.title, false)
 	return {"type": DRAG_TYPE, "stable_id": archetype.stable_id, "display_name": session.title}
@@ -208,11 +211,9 @@ static func scene_changed() -> void:
 	_spawned.clear()
 
 
-## A saved scene and a layout must be explicitly bound before editor nodes are touched.
+## 只允许访问该关卡的编辑场景，禁止使用运行时美术 / 逻辑场景。
 static func is_bound_to_scene(layout: GDLevelSceneRes, scene_root: Node) -> bool:
-	if layout == null or scene_root == null or layout.scene_path.is_empty():
-		return false
-	if scene_root.scene_file_path.is_empty() or layout.scene_path != scene_root.scene_file_path:
+	if not GDLevelEditScene.is_edit_scene(layout, scene_root):
 		return false
 	if not register_layout(layout):
 		return false
@@ -220,8 +221,18 @@ static func is_bound_to_scene(layout: GDLevelSceneRes, scene_root: Node) -> bool
 	return parent == null or _owns_parent(layout, parent)
 
 
+static func can_edit(layout: GDLevelSceneRes) -> bool:
+	return is_bound_to_scene(layout, edited_root())
+
+
 static func bind_layout_to_scene(layout: GDLevelSceneRes, scene_root: Node) -> bool:
 	if layout == null or scene_root == null or scene_root.scene_file_path.is_empty():
+		return false
+	if GDLevelEditScene.is_runtime_path(layout, scene_root.scene_file_path):
+		return false
+	if Engine.is_editor_hint() and not GDLevelEditScene.is_edit_scene(layout, scene_root):
+		return false
+	if scene_root.has_meta(GDLevelEditScene.META_EDIT_LAYOUT) and str(scene_root.get_meta(GDLevelEditScene.META_EDIT_LAYOUT)) != GDSceneEditorRuntime.layout_identity(layout):
 		return false
 	if not register_layout(layout):
 		return false
@@ -270,26 +281,10 @@ static func register_layout(layout: GDLevelSceneRes) -> bool:
 
 
 static func request_scene_binding(layout: GDLevelSceneRes, on_bound: Callable) -> void:
-	var scene_root := edited_root()
-	if is_bound_to_scene(layout, scene_root):
-		if layout.layout_id.is_empty():
-			bind_layout_to_scene(layout, scene_root)
+	if can_edit(layout):
 		on_bound.call()
 		return
-	if layout == null or scene_root == null or scene_root.scene_file_path.is_empty():
-		_set_status("请先保存当前场景，再绑定关卡。", false)
-		return
-	if not layout.scene_path.is_empty():
-		_set_status("当前场景与关卡绑定不一致，请打开 %s。" % layout.scene_path, false)
-		return
-	if _host == null:
-		return
-	GDDialogs.confirm(_host, "绑定关卡场景", "将当前关卡绑定到 %s？" % scene_root.scene_file_path, "绑定并继续", func() -> void:
-		if not is_instance_valid(scene_root) or edited_root() != scene_root or not bind_layout_to_scene(layout, scene_root):
-			_set_status("场景已改变或已有其他关卡占用，绑定已取消。", false)
-			return
-		on_bound.call()
-	)
+	_set_status("请先打开当前关卡的编辑场景，再编辑实例。", false)
 
 
 static func _owns_parent(layout: GDLevelSceneRes, parent: Node) -> bool:
@@ -354,7 +349,7 @@ static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, 
 	if host == null:
 		host = _scene_parent(layout, true)
 	if host == null or not _owns_parent(layout, host):
-		return {"ok": false, "instance_id": 0, "error": "请先将关卡绑定到当前已保存的场景。"}
+		return {"ok": false, "instance_id": 0, "error": "请先打开当前关卡的编辑场景。"}
 	if Engine.is_editor_hint() and host != _scene_parent(layout, true):
 		return {"ok": false, "instance_id": 0, "error": "当前场景与关卡绑定不一致。"}
 	var added := layout.editor_try_add_placement(archetype.stable_id, point, Vector3.ZERO, Vector3.ONE, 1)
@@ -377,6 +372,8 @@ static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, 
 static func delete_placement(layout: GDLevelSceneRes, inst_id: int) -> void:
 	if layout == null or inst_id <= 0:
 		return
+	if Engine.is_editor_hint() and not can_edit(layout):
+		return
 	var found := layout.editor_try_get_placement(inst_id)
 	var snapshot: GDPlacementData.PlacementInstance = found.get("inst") if bool(found.get("ok", false)) else null
 	erase_placed(layout, inst_id)
@@ -389,7 +386,7 @@ static func sync_layout_to_scene(layout: GDLevelSceneRes) -> Dictionary:
 		return {"ok": false, "spawned": 0, "message": "无关卡。"}
 	var host := _scene_parent(layout, true)
 	if host == null:
-		return {"ok": false, "spawned": 0, "message": "请先将关卡绑定到当前已保存的场景。"}
+		return {"ok": false, "spawned": 0, "message": "请先打开当前关卡的编辑场景。"}
 	var spawned := 0
 	for inst in layout.placements:
 		if inst == null:
@@ -439,12 +436,16 @@ static func pull_transforms_from_scene(layout: GDLevelSceneRes, scene_root: Node
 static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) -> void:
 	if layout == null:
 		return
+	if Engine.is_editor_hint() and not can_edit(layout):
+		return
 	var host := scene_parent
 	if host == null:
 		if not Engine.is_editor_hint():
 			return
 		host = _scene_parent(layout, not layout.placements.is_empty())
 	if host == null or not _owns_parent(layout, host):
+		return
+	if Engine.is_editor_hint() and host != _scene_parent(layout, true):
 		return
 	host.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
 	var by_id := {}
@@ -508,7 +509,7 @@ static func respawn(layout: GDLevelSceneRes, inst_id: int) -> void:
 
 
 static func focus_instance(inst_id: int, layout: GDLevelSceneRes = null) -> void:
-	if not Engine.is_editor_hint():
+	if not Engine.is_editor_hint() or not can_edit(layout):
 		return
 	var node := find_placed_node(inst_id, layout)
 	if node == null:
@@ -522,6 +523,8 @@ static func focus_instance(inst_id: int, layout: GDLevelSceneRes = null) -> void
 static func erase_placed(layout: GDLevelSceneRes, inst_id: int) -> void:
 	if layout == null:
 		return
+	if Engine.is_editor_hint() and not can_edit(layout):
+		return
 	var node := find_placed_node(inst_id, layout)
 	if node != null and is_instance_valid(node):
 		_spawned.erase(_cache_key(layout, inst_id))
@@ -531,6 +534,8 @@ static func erase_placed(layout: GDLevelSceneRes, inst_id: int) -> void:
 
 static func restore_placed(layout: GDLevelSceneRes, snapshot: GDPlacementData.PlacementInstance) -> void:
 	if layout == null or snapshot == null:
+		return
+	if Engine.is_editor_hint() and not can_edit(layout):
 		return
 	if not bool(layout.editor_try_get_placement(snapshot.instance_id).get("ok", false)):
 		layout.placements.append(snapshot)
@@ -669,9 +674,10 @@ static func _register_history(layout: GDLevelSceneRes, snapshot: GDPlacementData
 static func _update_hover() -> void:
 	if session == null:
 		return
-	if not Engine.is_editor_hint():
+	if not Engine.is_editor_hint() or not can_edit(session.layout):
 		session.hovering = false
 		session.snap_valid = false
+		_clear_ghost()
 		return
 	var hit3 := _hover_3d()
 	if bool(hit3.get("hit", false)):

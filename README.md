@@ -33,7 +33,9 @@ Godot 4.7 的策划工具套件：关卡、演员、技能、新手引导，共�
 
 保存时检查文件归属。遇到同名文件，可以另存为、生成带后缀的新名字或取消。另存为覆盖已有文件会要求确认，已经被其它资源加载的文件需要保存到其它路径。引导图首次保存后保留文件路径，修改图 ID 会重新校验唯一性。
 
-关卡首次摆放前需要确认绑定一个已保存的场景。1.1.1 中每个 `Placements` 容器绑定一份布局。回拉位姿、同步、撤销和删除只作用于绑定场景内属于该布局的实例。旧场景里没有布局标记的实例只会在绑定场景中认领。保存全部会先同步视口位姿，再判断哪些文档需要写盘。
+关卡页的“文件 → 打开关卡”显示项目中的关卡资产列表，可按名称或路径搜索。选中资产后会自动打开其 `scene_path` 指定的编辑场景；未配置时会在 `res://game_res/level/editing` 创建独立编辑场景。`art_scene_path` 和 `logic_scene_path` 继续用于运行时装配，不能与编辑场景共用。
+
+只有当前处于该关卡的编辑场景中，才能选中、摆放或修改实例、路径和相机。切换到运行时场景或其他场景会清除选择并停止拖拽，点击“进入编辑场景”可返回。每个 `Placements` 容器绑定一份布局，回拉位姿、同步、撤销和删除只作用于该编辑场景内属于该布局的实例。保存全部会先同步视口位姿，再判断哪些文档需要写盘。
 
 技能运行时先检查费用、冷却和标签，通过后扣费。配置了消耗的单位需要注册属性集，未知的消耗属性会拒绝施放。技能服务和效果应用器在同一个事件总线上共享 `tag_store`，支持标签引用计数和层级匹配。游戏侧可以设置技能服务的 `tag_query(owner_id, tag)` 回调补充已有状态。持续效果到期时移除自己授予的标签，瞬时片段直接应用效果并保留施放者信息。
 
@@ -74,7 +76,7 @@ Godot 不能把脚本是内部类的 Resource 写进 `.tres`。技能的片段�
 ```bash
 GODOT="D:/Godot/4.7.2/Godot_v4.7.2-stable_win64_console.exe"
 "$GODOT" --headless --path . --editor --import
-for t in test_gdesigner_tools test_level_page test_skill_page test_guide_page test_asset_safety test_level_safety test_skill_runtime_safety; do
+for t in test_gdesigner_tools test_level_page test_level_workflow test_skill_page test_guide_page test_asset_safety test_level_safety test_skill_runtime_safety; do
   "$GODOT" --headless --path . -s "res://addons/gdesigner_tools/tests/$t.gd"
 done
 ```

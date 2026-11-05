@@ -82,6 +82,14 @@ var paths: Array[PathLine] = []
 var cameras: Array[CameraMark] = []
 ## 路径采样预览点。
 var probe: Variant = null
+## 非当前关卡编辑场景中仍可平移缩放，但不能选择、拖动或接收原型。
+var editable: bool = true:
+	set(value):
+		editable = value
+		if not editable:
+			_drag = null
+			_dragging = false
+			mouse_default_cursor_shape = Control.CURSOR_ARROW
 
 var _scale: float = 24.0 # 像素 / 米
 var _pan: Vector2 = Vector2.ZERO # 世界原点在控件里的位置
@@ -171,6 +179,8 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion:
 		_on_motion(event)
 	elif event is InputEventKey and event.pressed and not event.echo:
+		if not editable and event.keycode != KEY_F:
+			return
 		match event.get_keycode_with_modifiers():
 			KEY_F:
 				fit_all()
@@ -194,11 +204,15 @@ func _on_button(event: InputEventMouseButton) -> void:
 			_panning = event.pressed
 			mouse_default_cursor_shape = Control.CURSOR_MOVE if _panning else Control.CURSOR_ARROW
 		MOUSE_BUTTON_LEFT:
+			if not editable:
+				return
 			if event.pressed:
 				_press(event.position)
 			else:
 				_release()
 		MOUSE_BUTTON_RIGHT:
+			if not editable:
+				return
 			if event.pressed:
 				_press(event.position)
 				_drag = null
@@ -210,6 +224,8 @@ func _on_button(event: InputEventMouseButton) -> void:
 
 
 func _press(at: Vector2) -> void:
+	if not editable:
+		return
 	grab_focus()
 	var hit := hit_test(at)
 	_drag = hit if hit != null and (hit.kind == MARK or (hit.kind == PATH and hit.index >= 0)) else null
@@ -238,7 +254,7 @@ func _on_motion(event: InputEventMouseMotion) -> void:
 		if _dragging:
 			moved.emit(_drag.kind, _drag.key, _drag.index, to_world(event.position))
 	else:
-		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if hit_test(event.position) != null else Control.CURSOR_ARROW
+		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if editable and hit_test(event.position) != null else Control.CURSOR_ARROW
 		return
 	accept_event()
 
@@ -249,11 +265,12 @@ func _get_tooltip(at: Vector2) -> String:
 
 
 func _can_drop_data(_at: Vector2, data: Variant) -> bool:
-	return GDLevelSceneDrop.is_payload(data)
+	return editable and GDLevelSceneDrop.is_payload(data)
 
 
 func _drop_data(at: Vector2, data: Variant) -> void:
-	dropped.emit(data, to_world(at))
+	if editable:
+		dropped.emit(data, to_world(at))
 
 
 ## 自上而下：选中路径的节点、实例、其他路径的节点、相机、路径线。

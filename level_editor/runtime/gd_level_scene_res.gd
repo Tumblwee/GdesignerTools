@@ -22,6 +22,7 @@ class LevelArchetypeRes extends GDArchetypeRes:
 @export var layout_id: String = ""
 @export var format_version: int = 2
 @export var display_name: String = ""
+## 关卡编辑工作区，与运行时装配的 logic_scene_path / art_scene_path 分开。
 @export var scene_path: String = ""
 @export var logic_scene_path: String = ""
 @export var logic_scene_name: String = ""

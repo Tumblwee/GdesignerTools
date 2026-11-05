@@ -47,21 +47,43 @@ func show_level() -> void:
 # ── 实例 ──
 
 func show_placement(id: int) -> void:
+	if not _page.can_edit_scene() or _page.find_placement(id) == null:
+		show_level() if _layout != null else show_nothing()
+		return
+	var target := _layout
 	var archetype := _layout.find_archetype_by_stable_id(_page.find_placement(id).archetype_stable_id)
-	var key: Array = [&"placement", id, _page.find_placement(id).archetype_stable_id]
+	var key: Array = [&"placement", target, id, _page.find_placement(id).archetype_stable_id]
 	if archetype != null:
 		key.append_array(GDArchetypeInspector.structure_key(archetype))
 	if not _form.begin(key):
 		return
-	var inst := func() -> GDPlacementData.PlacementInstance: return _page.find_placement(id)
+	var inst := func() -> GDPlacementData.PlacementInstance: return target.editor_try_get_placement(id).get("inst")
 	_live_heading(func() -> String: return _page.placement_title(inst.call()))
 	_add_archetype_choice(id)
-	_form.vector3("位置", func() -> Vector3: return inst.call().position, func(v: Vector3) -> void: _set_transform(id, v, inst.call().euler_angles, inst.call().scale))
-	_form.vector3("旋转", func() -> Vector3: return inst.call().euler_angles, func(v: Vector3) -> void: _set_transform(id, inst.call().position, v, inst.call().scale), 1.0)
-	_form.vector3("缩放", func() -> Vector3: return inst.call().scale, func(v: Vector3) -> void: _set_transform(id, inst.call().position, inst.call().euler_angles, v))
-	_form.text("名称", func() -> String: return inst.call().instance_name, func(v: String) -> void: _layout.editor_replace_placement(id, inst.call().with_name(v)))
-	_form.text("显示名", func() -> String: return inst.call().display_name, func(v: String) -> void: _layout.editor_replace_placement(id, inst.call().with_display_name(v)))
-	_form.integer("等级", func() -> int: return inst.call().initial_level, func(v: int) -> void: _layout.editor_replace_placement(id, inst.call().with_level(v)), {"min": 0})
+	_form.vector3("位置", func() -> Vector3: return inst.call().position, func(v: Vector3) -> void:
+		if _can_edit_placement(target, id):
+			_set_transform(id, v, inst.call().euler_angles, inst.call().scale, target)
+	)
+	_form.vector3("旋转", func() -> Vector3: return inst.call().euler_angles, func(v: Vector3) -> void:
+		if _can_edit_placement(target, id):
+			_set_transform(id, inst.call().position, v, inst.call().scale, target)
+	, 1.0)
+	_form.vector3("缩放", func() -> Vector3: return inst.call().scale, func(v: Vector3) -> void:
+		if _can_edit_placement(target, id):
+			_set_transform(id, inst.call().position, inst.call().euler_angles, v, target)
+	)
+	_form.text("名称", func() -> String: return inst.call().instance_name, func(v: String) -> void:
+		if _can_edit_placement(target, id):
+			target.editor_replace_placement(id, inst.call().with_name(v))
+	)
+	_form.text("显示名", func() -> String: return inst.call().display_name, func(v: String) -> void:
+		if _can_edit_placement(target, id):
+			target.editor_replace_placement(id, inst.call().with_display_name(v))
+	)
+	_form.integer("等级", func() -> int: return inst.call().initial_level, func(v: int) -> void:
+		if _can_edit_placement(target, id):
+			target.editor_replace_placement(id, inst.call().with_level(v))
+	, {"min": 0})
 	if archetype != null:
 		_add_overrides(id, archetype)
 	_form.group("高级", true)
@@ -71,6 +93,7 @@ func show_placement(id: int) -> void:
 
 
 func _add_archetype_choice(id: int) -> void:
+	var target := _layout
 	var items: Array = []
 	for archetype: GDArchetypeRes in _layout.archetypes:
 		if archetype != null:
@@ -79,29 +102,42 @@ func _add_archetype_choice(id: int) -> void:
 	if _layout.find_archetype_by_stable_id(current) == null:
 		items.append(["（丢失）#%d" % current, current])
 	var choice := _form.choice("原型", items,
-		func() -> int: return _page.find_placement(id).archetype_stable_id,
-		func(stable_id: int) -> void: swap_archetype(_layout, id, stable_id),
+		func() -> int: return target.editor_try_get_placement(id)["inst"].archetype_stable_id,
+		func(stable_id: int) -> void:
+			if _can_edit_placement(target, id):
+				swap_archetype(target, id, stable_id),
 		"也可以把左侧原型拖到这里替换"
 	)
 	choice.set_drag_forwarding(Callable(),
-		func(_at: Vector2, data: Variant) -> bool: return GDLevelSceneDrop.is_payload(data),
+		func(_at: Vector2, data: Variant) -> bool: return _page.can_edit_scene() and GDLevelSceneDrop.is_payload(data),
 		func(_at: Vector2, data: Variant) -> void:
 			GDLevelSceneDrop.finish_without_placing()
-			_page.commands.replace_archetype(id, int(data.get("stable_id", 0)))
+			if _can_edit_placement(target, id):
+				_page.commands.replace_archetype(id, int(data.get("stable_id", 0)))
 	)
 
 
 ## 换原型：位置和旋转保留，名称跟随新原型，场景节点重新生成。
 static func swap_archetype(layout: GDLevelSceneRes, id: int, stable_id: int) -> bool:
+	if Engine.is_editor_hint() and not GDLevelSceneDrop.can_edit(layout):
+		return false
 	if not layout.editor_replace_placement_archetype(id, stable_id):
 		return false
 	GDLevelSceneDrop.respawn(layout, id)
 	return true
 
 
-func _set_transform(id: int, pos: Vector3, euler: Vector3, scl: Vector3) -> void:
+func _set_transform(id: int, pos: Vector3, euler: Vector3, scl: Vector3, target: GDLevelSceneRes = null) -> void:
+	if target == null:
+		target = _layout
+	if not _can_edit_placement(target, id):
+		return
 	_layout.editor_replace_placement(id, _page.find_placement(id).with_transform(pos, euler, scl))
 	GDLevelSceneDrop.apply_transform(id, pos, euler, scl, _layout)
+
+
+func _can_edit_placement(target: GDLevelSceneRes, id: int) -> bool:
+	return _layout == target and _page.can_edit_scene() and _page.find_placement(id) != null
 
 
 ## 每个属性一个字段，显示实例上的值；和原型默认值不同时出现“恢复默认”。
@@ -118,9 +154,10 @@ func _add_overrides(id: int, archetype: GDArchetypeRes) -> void:
 
 
 func _add_override(id: int, def: GDCustomAttributeDef) -> void:
+	var target := _layout
 	var caption := def.display_name if not def.display_name.is_empty() else def.tag
-	var read := func() -> Variant: return _override_value(_page.find_placement(id), def)
-	var write := func(value: Variant) -> void: _write_override(id, def, value)
+	var read := func() -> Variant: return _override_value(target.editor_try_get_placement(id).get("inst"), def)
+	var write := func(value: Variant) -> void: _write_override(id, def, value, target)
 	var field: Control = null
 	match def.value_type:
 		GDCoreTypes.KeywordValueType.INT:
@@ -132,7 +169,9 @@ func _add_override(id: int, def: GDCustomAttributeDef) -> void:
 		_:
 			field = _form.text(caption, read, write)
 	var reset := GDEditorUi.tool_button(&"Reload", "恢复默认值 %s" % str(_default_of(def)), func() -> void:
-		_write_override(id, def, _default_of(def))
+		if not _can_edit_placement(target, id):
+			return
+		_write_override(id, def, _default_of(def), target)
 		_page.doc.commit("恢复默认值")
 	)
 	field.get_parent().add_child(reset)
@@ -161,7 +200,11 @@ static func _is_overridden(inst: GDPlacementData.PlacementInstance, def: GDCusto
 
 
 ## 运行时只读实例上的覆盖值，所以“恢复默认”是写回默认值，而不是删掉这一条。
-func _write_override(id: int, def: GDCustomAttributeDef, value: Variant) -> void:
+func _write_override(id: int, def: GDCustomAttributeDef, value: Variant, target: GDLevelSceneRes = null) -> void:
+	if target == null:
+		target = _layout
+	if not _can_edit_placement(target, id):
+		return
 	var inst := _page.find_placement(id)
 	var made: GDPlacementData.PlacementAttributeOverride = null
 	match def.value_type:
@@ -216,10 +259,16 @@ func show_archetype(archetype: GDArchetypeRes) -> void:
 # ── 路径 ──
 
 func show_path(id: int) -> void:
-	if not _form.begin([&"path", id, _page.find_path(id).knot_count]):
+	if not _page.can_edit_scene() or _page.find_path(id) == null:
+		show_level() if _layout != null else show_nothing()
 		return
-	var path := func() -> GDPathSystem.PathInstance: return _page.find_path(id)
-	var edit := func(change: Callable) -> void: _layout.editor_replace_path(id, change.call(path.call()))
+	var target := _layout
+	if not _form.begin([&"path", target, id, _page.find_path(id).knot_count]):
+		return
+	var path := func() -> GDPathSystem.PathInstance: return target.editor_try_get_path(id).get("path")
+	var edit := func(change: Callable) -> void:
+		if _layout == target and _page.can_edit_scene() and path.call() != null:
+			target.editor_replace_path(id, change.call(path.call()))
 	_live_heading(func() -> String: return GDLevelPage.path_title(path.call()))
 	_form.text("显示名", func() -> String: return path.call().display_name, func(v: String) -> void: edit.call(func(p: GDPathSystem.PathInstance) -> GDPathSystem.PathInstance: return p.with_display_name(v)))
 	var write_type := func(v: int) -> void: edit.call(func(p: GDPathSystem.PathInstance) -> GDPathSystem.PathInstance: return p.with_path_type(v))
@@ -257,9 +306,12 @@ func _add_probe(id: int) -> void:
 
 
 func _add_knot(form: GDForm, id: int, k: int) -> void:
+	var target := _layout
 	var title := HBoxContainer.new()
 	title.add_child(GDEditorUi.title_label("节点 %d" % (k + 1)))
 	var remove := GDEditorUi.tool_button(&"Remove", "删除节点", func() -> void:
+		if _layout != target or not _page.can_edit_scene():
+			return
 		var spline := _page.find_path(id).spline.clone_spline()
 		spline.knots.remove_at(k)
 		_layout.editor_replace_path(id, _page.find_path(id).with_spline(spline))
@@ -273,12 +325,16 @@ func _add_knot(form: GDForm, id: int, k: int) -> void:
 			form.group("切线", true)
 		form.vector3(field[1],
 			func() -> Vector3: return _page.find_path(id).spline.knots[k].get(field[0]),
-			func(v: Vector3) -> void: set_knot(_layout, id, k, field[0], v)
+			func(v: Vector3) -> void:
+				if _layout == target and _page.can_edit_scene():
+					set_knot(target, id, k, field[0], v)
 		)
 	form.end_group()
 
 
 func _add_knot_at_end(id: int) -> void:
+	if not _page.can_edit_scene() or _page.find_path(id) == null:
+		return
 	var path := _page.find_path(id)
 	var spline := path.spline.clone_spline()
 	var last: Vector3 = spline.knots[-1].position if not spline.knots.is_empty() else Vector3.ZERO
@@ -301,11 +357,17 @@ static func set_knot(layout: GDLevelSceneRes, id: int, k: int, field: StringName
 # ── 相机 ──
 
 func show_camera(index: int) -> void:
-	var pose := _page.find_pose(index)
-	if not _form.begin([&"camera", index, pose.projection, pose.has_initial_zoom, pose.has_bound, pose.has_bound_edges]):
+	if not _page.can_edit_scene() or _page.find_pose(index) == null:
+		show_level() if _layout != null else show_nothing()
 		return
-	var get_pose := func() -> GDCameraPoseSystem.CameraPose: return _page.find_pose(index)
-	var edit := func(change: Callable) -> void: _layout.editor_replace_camera_pose_at(index, change.call(get_pose.call()))
+	var target := _layout
+	var pose := _page.find_pose(index)
+	if not _form.begin([&"camera", target, index, pose.projection, pose.has_initial_zoom, pose.has_bound, pose.has_bound_edges]):
+		return
+	var get_pose := func() -> GDCameraPoseSystem.CameraPose: return target.editor_try_get_camera_pose(index).get("pose")
+	var edit := func(change: Callable) -> void:
+		if _layout == target and _page.can_edit_scene() and get_pose.call() != null:
+			target.editor_replace_camera_pose_at(index, change.call(get_pose.call()))
 	_live_heading(func() -> String: return get_pose.call().display_name)
 	_form.text("显示名", func() -> String: return get_pose.call().display_name, func(v: String) -> void: edit.call(func(p: GDCameraPoseSystem.CameraPose) -> GDCameraPoseSystem.CameraPose: return p.with_display_name(v)))
 	_form.text("名称", func() -> String: return get_pose.call().pose_name, func(v: String) -> void: edit.call(func(p: GDCameraPoseSystem.CameraPose) -> GDCameraPoseSystem.CameraPose: return p.with_name(v)), {"tip": "运行时按这个名字取机位"})
@@ -376,6 +438,8 @@ func _add_bound(index: int, pose: GDCameraPoseSystem.CameraPose, edit: Callable)
 		_form.vector2("半宽 / 半长", func() -> Vector2: return get_pose.call().bound_half_extents,
 			func(v: Vector2) -> void: edit.call(func(p: GDCameraPoseSystem.CameraPose) -> GDCameraPoseSystem.CameraPose: return p.with_bound(p.bound_center, p.bound_yaw_deg, v)))
 	_form.button("初始化默认边界", func() -> void:
+		if not _page.can_edit_scene():
+			return
 		edit.call(func(p: GDCameraPoseSystem.CameraPose) -> GDCameraPoseSystem.CameraPose: return default_bound(p))
 		_page.doc.commit("初始化默认边界")
 	)
@@ -395,6 +459,8 @@ static func default_bound(pose: GDCameraPoseSystem.CameraPose) -> GDCameraPoseSy
 
 
 func _refresh_from_view(index: int) -> void:
+	if not _page.can_edit_scene() or _page.find_pose(index) == null:
+		return
 	var camera := viewport_camera()
 	if camera == null:
 		_page.say("没有可用的 3D 视口", &"warn")

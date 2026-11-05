@@ -26,6 +26,8 @@ var _target: Container = self
 var _readers: Array[Callable] = []
 var _syncing: bool = false
 var _suspended: bool = false
+var _generation: int = 0
+var _parent_guard: Callable = Callable()
 
 
 func _init() -> void:
@@ -44,11 +46,20 @@ func begin(key: Variant) -> bool:
 
 func clear() -> void:
 	_suspended = true
+	_generation += 1
 	GDEditorUi.clear_children(self)
 	_suspended = false
 	_readers.clear()
 	_key = null
 	_target = self
+
+
+## 移除控件后可能仍收到失焦提交；旧表单不能写入新文档或产生空撤销记录。
+func _write_guard() -> Callable:
+	var generation := _generation
+	return func() -> bool:
+		return not _suspended and generation == _generation \
+			and (not _parent_guard.is_valid() or bool(_parent_guard.call()))
 
 
 ## 回读模型到控件。正在输入的文本框不会被覆盖。
@@ -115,6 +126,7 @@ func on_sync(apply: Callable) -> void:
 ## 嵌在当前位置的子表单，提交和回读都接到父表单。用来给列表项单独分块。
 func nested() -> GDForm:
 	var child := GDForm.new()
+	child._parent_guard = _write_guard()
 	child.committed.connect(committed.emit)
 	_readers.append(child.sync)
 	_target.add_child(child)
@@ -137,7 +149,11 @@ func row(label: String, control: Control, tip: String = "") -> Control:
 
 
 func button(text_value: String, on_pressed: Callable, kind: StringName = &"normal") -> Button:
-	var btn := GDEditorUi.text_button(text_value, on_pressed, kind)
+	var can_write := _write_guard()
+	var btn := GDEditorUi.text_button(text_value, func() -> void:
+		if can_write.call():
+			on_pressed.call()
+	, kind)
 	_target.add_child(btn)
 	return btn
 
@@ -156,8 +172,9 @@ func number(label: String, read: Callable, write: Callable, opts: Dictionary = {
 
 func toggle(label: String, read: Callable, write: Callable, tip: String = "") -> CheckBox:
 	var box := CheckBox.new()
+	var can_write := _write_guard()
 	box.toggled.connect(func(on: bool) -> void:
-		if _syncing or on == bool(read.call()):
+		if not can_write.call() or _syncing or on == bool(read.call()):
 			return
 		write.call(on)
 		committed.emit(label, false)
@@ -175,7 +192,10 @@ func choice(label: String, items: Array, read: Callable, write: Callable, tip: S
 	for item: Array in items:
 		option.add_item(str(item[0]), int(item[1]))
 	var pull := func() -> void: option.select(option.get_item_index(int(read.call())))
+	var can_write := _write_guard()
 	option.item_selected.connect(func(index: int) -> void:
+		if not can_write.call():
+			return
 		var picked := option.get_item_id(index)
 		if picked != int(read.call()):
 			write.call(picked)
@@ -280,8 +300,9 @@ func _line_edit(label: String, read: Callable, write: Callable, opts: Dictionary
 	edit.placeholder_text = str(opts.get("placeholder", ""))
 	edit.editable = not bool(opts.get("readonly", false))
 	edit.select_all_on_focus = true
+	var can_write := _write_guard()
 	var apply := func() -> void:
-		if _suspended or not edit.editable:
+		if not can_write.call() or not edit.editable:
 			return
 		var value := edit.text.strip_edges()
 		if value != str(read.call()):
@@ -290,7 +311,7 @@ func _line_edit(label: String, read: Callable, write: Callable, opts: Dictionary
 	edit.text_submitted.connect(func(_t: String) -> void: apply.call())
 	edit.focus_exited.connect(apply)
 	edit.gui_input.connect(func(event: InputEvent) -> void:
-		if event.is_action_pressed(&"ui_cancel"):
+		if can_write.call() and event.is_action_pressed(&"ui_cancel"):
 			edit.text = str(read.call())
 			edit.release_focus()
 			edit.accept_event()
@@ -309,8 +330,9 @@ func _text_area(label: String, read: Callable, write: Callable, opts: Dictionary
 	area.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
 	area.custom_minimum_size.y = 56
 	area.placeholder_text = str(opts.get("placeholder", ""))
+	var can_write := _write_guard()
 	area.focus_exited.connect(func() -> void:
-		if not _suspended and area.text != str(read.call()):
+		if can_write.call() and area.text != str(read.call()):
 			write.call(area.text)
 			committed.emit(label, false)
 	)
@@ -324,8 +346,9 @@ func _text_area(label: String, read: Callable, write: Callable, opts: Dictionary
 
 func _spin(label: String, read: Callable, write: Callable, opts: Dictionary, as_int: bool) -> SpinBox:
 	var spin := _make_spin(opts)
+	var can_write := _write_guard()
 	var push := func(value: float) -> void:
-		if _syncing:
+		if not can_write.call() or _syncing:
 			return
 		var current := float(read.call())
 		if is_equal_approx(value, current):
@@ -353,9 +376,10 @@ func _vector(label: String, axes: int, read: Callable, write: Callable, step: fl
 		if axes == 2:
 			return Vector2(spins[0].value, spins[1].value)
 		return Vector3(spins[0].value, spins[1].value, spins[2].value)
+	var can_write := _write_guard()
 	for spin in spins:
 		spin.value_changed.connect(func(_v: float) -> void:
-			if _syncing:
+			if not can_write.call() or _syncing:
 				return
 			var value: Variant = compose.call()
 			if not value.is_equal_approx(read.call()):

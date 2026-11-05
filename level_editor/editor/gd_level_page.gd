@@ -34,6 +34,8 @@ var _probe: Variant = null
 ## 上次刷新时的实例 ID，用来判断视口拖放或编辑器撤销是否改了关卡。
 var _seen_ids: Array[int] = []
 var _opened_default: bool = false
+var _scene_hint: Label = null
+var _opening_scene: bool = false
 
 
 var layout: GDLevelSceneRes:
@@ -50,6 +52,7 @@ func _build() -> void:
 		null,
 		{"text": "另存为…", "do": save_as_current},
 	]))
+	toolbar.add_child(GDEditorUi.text_button("进入编辑场景", open_edit_scene, &"flat"))
 	var sync := GDEditorUi.text_button("同步到场景", _sync_to_scene, &"flat")
 	sync.tooltip_text = "把场景里还没有的实例生成到 Placements 下"
 	toolbar.add_child(sync)
@@ -71,7 +74,7 @@ func _build() -> void:
 
 	_form = GDForm.new()
 	_form.committed.connect(func(label: String, merge: bool) -> void:
-		if doc != null:
+		if doc != null and (_kind == Kind.NONE or can_edit_scene()):
 			doc.commit("修改%s" % label, merge)
 	)
 	_inspector = GDLevelInspector.new(self, _form)
@@ -86,7 +89,7 @@ func _build_center() -> Control:
 	_plan.picked.connect(_on_plan_picked)
 	_plan.moved.connect(_on_plan_moved)
 	_plan.move_finished.connect(func(kind: StringName, _key: int) -> void:
-		if doc != null:
+		if doc != null and can_edit_scene():
 			doc.commit("移动实例" if kind == GDPlanView.MARK else "移动路径节点")
 	)
 	_plan.dropped.connect(_on_plan_dropped)
@@ -97,6 +100,8 @@ func _build_center() -> Control:
 
 	var bottom := VBoxContainer.new()
 	bottom.add_theme_constant_override("separation", GDEditorUi.GAP)
+	_scene_hint = GDEditorUi.hint_label("请进入此关卡的编辑场景后选择或编辑实例。")
+	bottom.add_child(_scene_hint)
 	var bar := HBoxContainer.new()
 	bottom.add_child(bar)
 	_tabs = TabBar.new()
@@ -167,14 +172,76 @@ func set_layout(new_layout: GDLevelSceneRes) -> void:
 	var assigned_identity := new_layout != null and new_layout.layout_id.is_empty()
 	GDLevelSceneDrop.ensure_layout_identity(new_layout)
 	GDLevelSceneDrop.register_layout(new_layout)
+	# 场景绑定属于文档身份，先建立再记录初始快照，避免撤销把工作区解绑。
+	var scene_setup: Dictionary = {}
+	if new_layout != null and Engine.is_editor_hint():
+		scene_setup = GDLevelEditScene.ensure_scene(new_layout)
 	open_document(new_layout)
 	if new_layout != null:
-		if assigned_identity and not new_layout.resource_path.is_empty():
+		if (assigned_identity and not new_layout.resource_path.is_empty()) or bool(scene_setup.get("binding_changed", false)):
 			doc.mark_unsaved()
 		new_layout.editor_reconcile_next_ids_after_load()
 		doc.on_restored = func() -> void: GDLevelSceneDrop.reconcile_scene(new_layout)
 	_refresh()
 	_plan.fit_all()
+	if new_layout != null and Engine.is_editor_hint():
+		_open_layout_scene.call_deferred(new_layout)
+
+
+## 关卡数据可以浏览；场景对象只允许在本关卡的编辑场景中修改。
+func can_edit_scene() -> bool:
+	return GDLevelSceneDrop.is_bound_to_scene(layout, GDLevelSceneDrop.edited_root())
+
+
+func require_edit_scene() -> bool:
+	if can_edit_scene():
+		return true
+	say("请先进入此关卡的编辑场景，再选择或编辑实例。", &"warn")
+	return false
+
+
+func open_edit_scene() -> void:
+	if layout != null:
+		_open_layout_scene.call_deferred(layout)
+
+
+func _open_layout_scene(target: GDLevelSceneRes) -> void:
+	if layout != target or not Engine.is_editor_hint() or _opening_scene:
+		return
+	# 重开已经处于前台的场景前，先保留视口中的未提交位姿。
+	_pull_scene(doc)
+	_opening_scene = true
+	var result := GDLevelEditScene.open_scene(target)
+	_opening_scene = false
+	if not bool(result.get("ok", false)):
+		say(str(result.get("error", "无法打开编辑场景")), &"danger")
+		_refresh()
+		return
+	if bool(result.get("binding_changed", false)):
+		doc.mark_unsaved()
+	_finish_open_scene.call_deferred(target)
+
+
+func _finish_open_scene(target: GDLevelSceneRes) -> void:
+	if layout != target:
+		return
+	if not can_edit_scene():
+		say("编辑场景尚未激活，请点击“进入编辑场景”重试。", &"warn")
+		return
+	GDLevelSceneDrop.reconcile_scene(target)
+	on_scene_changed()
+
+
+func on_scene_changed() -> void:
+	GDLevelSceneDrop.cancel()
+	if not can_edit_scene():
+		_clear_selection()
+	_refresh()
+
+
+func _step_history(back: bool) -> void:
+	if require_edit_scene():
+		super._step_history(back)
 
 
 func get_current_layout() -> GDLevelSceneRes:
@@ -192,6 +259,10 @@ func select_archetype(archetype: GDArchetypeRes) -> void:
 
 
 func select_item(kind: Kind, id: int) -> void:
+	if kind != Kind.NONE and not require_edit_scene():
+		_clear_selection()
+		_refresh_selection()
+		return
 	_kind = kind
 	_id = id
 	_archetype = null
@@ -204,7 +275,7 @@ func select_item(kind: Kind, id: int) -> void:
 
 ## 选中的实例 ID；没有选中实例时为 0。
 func selected_placement() -> int:
-	return _id if _kind == Kind.PLACEMENT else 0
+	return _id if _kind == Kind.PLACEMENT and can_edit_scene() else 0
 
 
 func cli_context(command: String) -> PackedStringArray:
@@ -313,6 +384,12 @@ func _placement_ids() -> Array[int]:
 
 func _refresh() -> void:
 	_validate_selection()
+	var editable := can_edit_scene()
+	_plan.editable = editable
+	_add_btn.disabled = not editable
+	_scene_hint.visible = layout != null and not editable
+	for list in _lists:
+		list.modulate.a = 1.0 if editable else 0.55
 	_seen_ids = _placement_ids()
 	_refresh_archetypes()
 	_refresh_lists()
@@ -323,6 +400,10 @@ func _validate_selection() -> void:
 	if layout == null:
 		_clear_selection()
 		return
+	if not can_edit_scene():
+		_kind = Kind.NONE
+		_id = 0
+		_probe = null
 	if _archetype != null and not layout.archetypes.has(_archetype):
 		_archetype = null
 	_inspect_archetype = _inspect_archetype and _archetype != null
@@ -474,7 +555,7 @@ func _camera_mark(index: int, pose: GDCameraPoseSystem.CameraPose) -> GDPlanView
 ## 用户点选：实例同时在编辑器里选中对应节点。
 func _pick(kind: Kind, id: int) -> void:
 	select_item(kind, id)
-	if kind == Kind.PLACEMENT:
+	if kind == Kind.PLACEMENT and selected_placement() == id:
 		GDLevelSceneDrop.focus_instance(id, layout)
 
 
@@ -516,6 +597,8 @@ func _on_plan_picked(kind: StringName, key: int) -> void:
 
 ## 拖动时只改模型和场景节点，松手时才提交，撤销栈里只有一步。
 func _on_plan_moved(kind: StringName, key: int, index: int, xz: Vector2) -> void:
+	if not require_edit_scene():
+		return
 	if kind == GDPlanView.MARK:
 		var inst := find_placement(key)
 		var pos := Vector3(xz.x, inst.position.y, xz.y)
@@ -542,7 +625,7 @@ func place_at_view(archetype: GDArchetypeRes) -> void:
 
 
 func _place(archetype: GDArchetypeRes, point: Vector3) -> void:
-	if layout == null:
+	if not require_edit_scene():
 		return
 	var target := layout
 	GDLevelSceneDrop.request_scene_binding(target, func() -> void:

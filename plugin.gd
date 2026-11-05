@@ -60,6 +60,7 @@ func _on_scene_changed(scene_root: Node) -> void:
 		_window.dock.level_editor.capture_scene(previous)
 	GDLevelSceneDrop.scene_changed()
 	_previous_scene = weakref(scene_root) if scene_root != null else null
+	_window.dock.level_editor.on_scene_changed()
 
 
 func _forward_3d_force_draw_over_viewport(overlay: Control) -> void:

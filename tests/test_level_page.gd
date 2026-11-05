@@ -6,9 +6,16 @@ extends SceneTree
 const SAVE_PATH := "user://level_page_test.tres"
 const Kind := GDLevelPage.Kind
 
+class TestLevelPage extends GDLevelPage:
+	var edit_scene_active := true
+
+	func can_edit_scene() -> bool:
+		return edit_scene_active and layout != null
+
+
 var _passed := 0
 var _failed := 0
-var page: GDLevelPage = null
+var page: TestLevelPage = null
 var plan: GDPlanView = null
 var layout: GDLevelSceneRes = null
 
@@ -19,7 +26,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	root.size = Vector2i(1280, 800)
-	page = GDLevelPage.new()
+	page = TestLevelPage.new()
 	root.add_child(page)
 	page.position = Vector2.ZERO
 	page.size = Vector2(1280, 800)
@@ -33,6 +40,8 @@ func _run() -> void:
 	_check(page._archetype_list._tree.get_root().get_child_count() == 2, "archetypes are grouped by type")
 
 	_test_select_and_edit_position()
+	_test_edit_scene_gate()
+	_test_stale_instance_callbacks()
 	_test_delete_instance()
 	_test_archetypes()
 	await _frames(1)
@@ -53,6 +62,95 @@ func _run() -> void:
 
 
 # ── 用例 ──
+
+func _test_edit_scene_gate() -> void:
+	var id: int = layout.placements[0].instance_id
+	var inst: GDPlacementData.PlacementInstance = page.find_placement(id)
+	var count := layout.placements.size()
+	var steps := page.doc._cursor
+	page.select_placement(id)
+	page.commands.rename_item(Kind.PLACEMENT, id)
+	var rename := _last_dialog()
+	_check(rename != null, "instance rename opens in the edit scene")
+	if rename != null:
+		_find_line_edit(rename).text = "Must not rename outside editor"
+	page.edit_scene_active = false
+	page.on_scene_changed()
+	_check(page.selected_placement() == 0 and page._lists[0]._tree.get_selected() == null, "leaving the edit scene clears instance and list selection")
+	_check(_vector_spins("位置").is_empty(), "leaving the edit scene removes the instance inspector")
+	page.select_placement(id)
+	page._lists[0].item_selected.emit(id)
+	page._on_plan_picked(GDPlanView.MARK, id)
+	_check(page.selected_placement() == 0, "direct, list and plan picks cannot select outside the edit scene")
+	page._on_plan_moved(GDPlanView.MARK, id, 0, Vector2(99, 99))
+	page.commands.duplicate_item(Kind.PLACEMENT, id)
+	page.commands.delete_item(Kind.PLACEMENT, id)
+	page.commands.replace_archetype(id, layout.archetypes[1].stable_id)
+	page.commands._move_instance(id, 2)
+	page.commands.standardize_instance_ids(layout.archetypes[0])
+	page._inspector._set_transform(id, Vector3(99, 99, 99), Vector3.ZERO, Vector3.ONE)
+	page._inspector._write_override(id, layout.archetypes[0].custom_attributes[0], 99.0)
+	if rename != null:
+		rename.confirmed.emit()
+		rename.hide()
+	_check(layout.placements.size() == count and page.find_placement(id) == inst and page.doc._cursor == steps, "commands, plan moves, inspector writes and an already-open rename leave the model and history unchanged outside the edit scene")
+	page.commands.rename_item(Kind.PLACEMENT, id)
+	page.commands.reset_instance_id(id)
+	_check(_last_dialog() == null, "instance dialogs cannot open outside the edit scene")
+	page.edit_scene_active = true
+	page.on_scene_changed()
+	page.select_placement(id)
+	_check(page.selected_placement() == id and _vector_spins("位置").size() == 3, "returning to the edit scene enables selection and the inspector")
+	page.commands.reset_instance_id(id)
+	var reset := _last_dialog()
+	_check(reset != null, "reset ID opens in the edit scene")
+	if reset != null:
+		_find_line_edit(reset).text = "999"
+		page.edit_scene_active = false
+		page.on_scene_changed()
+		reset.confirmed.emit()
+		reset.hide()
+		_check(page.find_placement(id) == inst and page.find_placement(999) == null and page.doc._cursor == steps, "an already-open reset ID dialog rechecks the edit scene before changing the model")
+	page.edit_scene_active = true
+	page.on_scene_changed()
+
+
+func _test_stale_instance_callbacks() -> void:
+	var id: int = layout.placements[0].instance_id
+	var original := page.find_placement(id)
+	page.select_placement(id)
+	var stale_position: SpinBox = _vector_spins("位置")[0]
+	var stale_name := _row_control("名称") as LineEdit
+	var stale_level := _spin_after("等级")
+	var stale_height := _spin_after("高度")
+	var stale_archetype := _choice("原型")
+	page.commands.rename_item(Kind.PLACEMENT, id)
+	var rename := _last_dialog()
+	if rename != null:
+		_find_line_edit(rename).text = "Wrong level callback"
+	var replacement := GDSampleFactory.build_level_scene()
+	page.set_layout(replacement)
+	var target := page.find_placement(id)
+	var steps := page.doc._cursor
+	# The old form is detached and queued for deletion; callbacks may still arrive this frame.
+	stale_position.value = 101.0
+	stale_name.text = "Wrong level name"
+	stale_name.text_submitted.emit(stale_name.text)
+	stale_level.value = 101.0
+	stale_height.value = 101.0
+	stale_archetype.select(1)
+	stale_archetype.item_selected.emit(1)
+	page._inspector._set_transform(id, Vector3.ONE * 101.0, Vector3.ZERO, Vector3.ONE, layout)
+	page._inspector._write_override(id, layout.archetypes[0].custom_attributes[0], 101.0, layout)
+	if rename != null:
+		rename.confirmed.emit()
+		rename.hide()
+	_check(page.find_placement(id) == target and layout.editor_try_get_placement(id).get("inst") == original, "stale fields and dialogs cannot change either level after switching to an asset with the same instance ID")
+	_check(page.doc._cursor == steps and not page.doc.dirty, "stale callbacks do not dirty the newly opened document")
+	page.set_layout(layout)
+	page.select_placement(id)
+	_check(page.selected_placement() == id, "switching back restores editable instance selection")
+
 
 func _test_select_and_edit_position() -> void:
 	var id: int = layout.placements[0].instance_id
@@ -190,6 +288,7 @@ func _test_cameras() -> void:
 	proj.item_selected.emit(1)
 	_check(page.find_pose(0).projection == GDCameraPoseSystem.CameraProjectionMode.ORTHOGRAPHIC and _spin_after("最小尺寸") != null, "switching to 正交 rebuilds the form")
 	_check(page.find_pose(0).bound_plane == GDCameraPoseSystem.CameraBoundPlane.XY, "orthographic uses the XY bound plane")
+	proj = _choice("投影")
 	proj.select(0)
 	proj.item_selected.emit(0)
 	var bound := _toggle("启用边界")

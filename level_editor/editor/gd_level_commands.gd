@@ -95,13 +95,21 @@ func _add_copy(archetype: GDArchetypeRes, as_variant: bool) -> void:
 ## 删除原型会连带删掉用它的实例，所以这时才确认。
 func delete_archetype(archetype: GDArchetypeRes) -> void:
 	var uses := layout.editor_count_placements_by_archetype_stable_id(archetype.stable_id)
+	if uses > 0 and not _page.require_edit_scene():
+		return
 	if uses == 0:
 		_remove_archetype(archetype)
 		return
-	GDDialogs.confirm(_page, "删除原型", "有 %d 个实例使用「%s」，会一起删除。" % [uses, archetype.display_name], "删除", func() -> void: _remove_archetype(archetype))
+	var target := layout
+	GDDialogs.confirm(_page, "删除原型", "有 %d 个实例使用「%s」，会一起删除。" % [uses, archetype.display_name], "删除", func() -> void:
+		if layout == target and _page.require_edit_scene():
+			_remove_archetype(archetype)
+	)
 
 
 func _remove_archetype(archetype: GDArchetypeRes) -> void:
+	if layout.editor_count_placements_by_archetype_stable_id(archetype.stable_id) > 0 and not _page.require_edit_scene():
+		return
 	layout.editor_remove_placements_by_archetype_stable_id(archetype.stable_id)
 	layout.editor_remove_archetype(archetype)
 	GDLevelSceneDrop.reconcile_scene(layout)
@@ -110,6 +118,8 @@ func _remove_archetype(archetype: GDArchetypeRes) -> void:
 
 
 func replace_archetype(id: int, stable_id: int) -> void:
+	if not _page.require_edit_scene():
+		return
 	if GDLevelInspector.swap_archetype(layout, id, stable_id):
 		_commit("替换原型")
 
@@ -147,7 +157,7 @@ static func _is_identifier(text: String) -> bool:
 # ── 实例 / 路径 / 相机：列表和平面图共用 ──
 
 func item_menu(kind: GDLevelPage.Kind, key: int) -> void:
-	if layout == null:
+	if not _page.require_edit_scene():
 		return
 	var rename := {"text": "重命名…", "do": func() -> void: rename_item(kind, key), "shortcut": GDEditorUi.key(KEY_F2)}
 	var duplicate := {"text": "复制", "do": func() -> void: duplicate_item(kind, key), "shortcut": GDEditorUi.key(KEY_D, true)}
@@ -173,7 +183,7 @@ func item_menu(kind: GDLevelPage.Kind, key: int) -> void:
 
 
 func add_item(kind: GDLevelPage.Kind) -> void:
-	if layout == null:
+	if not _page.require_edit_scene():
 		return
 	match kind:
 		GDLevelPage.Kind.PATH:
@@ -202,6 +212,9 @@ func _unique_pose_name() -> String:
 
 
 func rename_item(kind: GDLevelPage.Kind, key: int) -> void:
+	if not _page.require_edit_scene():
+		return
+	var target := layout
 	var current := ""
 	match kind:
 		GDLevelPage.Kind.PLACEMENT:
@@ -213,6 +226,8 @@ func rename_item(kind: GDLevelPage.Kind, key: int) -> void:
 		_:
 			return
 	GDDialogs.prompt(_page, "重命名", "显示名", current, func(text: String) -> void:
+		if layout != target or not _page.require_edit_scene():
+			return
 		match kind:
 			GDLevelPage.Kind.PLACEMENT:
 				layout.editor_replace_placement(key, _page.find_placement(key).with_display_name(text))
@@ -226,6 +241,8 @@ func rename_item(kind: GDLevelPage.Kind, key: int) -> void:
 
 ## 复制品稍微挪开一点，免得和原件重叠看不出来。
 func duplicate_item(kind: GDLevelPage.Kind, key: int) -> void:
+	if not _page.require_edit_scene():
+		return
 	var id := 0
 	match kind:
 		GDLevelPage.Kind.PLACEMENT:
@@ -256,6 +273,8 @@ func duplicate_item(kind: GDLevelPage.Kind, key: int) -> void:
 
 
 func delete_item(kind: GDLevelPage.Kind, key: int) -> void:
+	if not _page.require_edit_scene():
+		return
 	match kind:
 		GDLevelPage.Kind.PLACEMENT:
 			var title := _page.placement_title(_page.find_placement(key))
@@ -271,12 +290,19 @@ func delete_item(kind: GDLevelPage.Kind, key: int) -> void:
 
 
 func _move_instance(id: int, insert_index: int) -> void:
+	if not _page.require_edit_scene():
+		return
 	if layout.editor_move_placement(id, insert_index):
 		_commit("调整实例顺序")
 
 
 func reset_instance_id(id: int) -> void:
+	if not _page.require_edit_scene():
+		return
+	var target := layout
 	GDDialogs.prompt(_page, "重设实例 ID", "新 ID", str(id), func(text: String) -> void:
+		if layout != target or not _page.require_edit_scene():
+			return
 		var was_selected := _page.selected_placement() == id
 		if layout.editor_reset_instance_id(id, text.to_int()):
 			GDLevelSceneDrop.reconcile_scene(layout)
@@ -293,6 +319,8 @@ func reset_instance_id(id: int) -> void:
 
 
 func standardize_instance_ids(archetype: GDArchetypeRes) -> void:
+	if not _page.require_edit_scene():
+		return
 	var selected := _page.selected_placement()
 	var result := layout.editor_try_standardize_instance_ids(archetype)
 	if not bool(result.get("ok", false)):
@@ -310,6 +338,8 @@ func standardize_instance_ids(archetype: GDArchetypeRes) -> void:
 
 
 func apply_camera(index: int) -> void:
+	if not _page.require_edit_scene():
+		return
 	var camera := GDLevelInspector.scene_camera()
 	if camera == null:
 		_page.say("当前场景里没有 Camera3D", &"warn")
@@ -337,13 +367,7 @@ func new_level() -> void:
 
 
 func open_level() -> void:
-	GDDialogs.open_file(_page, "打开关卡", PackedStringArray(["*.tres ; 关卡"]), func(path: String) -> void:
-		var loaded := ResourceLoader.load(path)
-		if loaded is GDLevelSceneRes:
-			_page.set_layout(loaded)
-		else:
-			_page.say("这不是关卡：%s" % path, &"danger")
-	)
+	GDLevelAssetPicker.open(_page, _page.set_layout)
 
 
 func edit_types() -> void:
@@ -373,7 +397,7 @@ func export_csv() -> void:
 
 ## 迁移会直接写盘，所以先预演，把结果给人看过再执行。
 func migrate_ids() -> void:
-	if layout == null:
+	if not _page.require_edit_scene():
 		return
 	var preview := GDLayoutMigration.run_migration([layout])
 	if preview.instance_id_reassigned == 0:
@@ -385,6 +409,8 @@ func migrate_ids() -> void:
 	if GDLevelPage.is_file(target):
 		message += "\n迁移后立即保存到 %s。" % target.resource_path
 	GDDialogs.confirm(_page, "迁移 ID", message, "迁移", func() -> void:
+		if layout != target or not _page.require_edit_scene():
+			return
 		var options := GDLayoutMigration.MigrationOptions.new()
 		options.dry_run = false
 		GDLayoutMigration.run_migration([target], options)
