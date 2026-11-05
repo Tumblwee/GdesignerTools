@@ -12,6 +12,7 @@ const EVENT_PLACEMENT_CLICKED := "PlacementClickedEvent"
 const EVENT_PLACEMENT_LONG_PRESSED := "PlacementLongPressedEvent"
 ## 编辑器摆进场景的实例节点上记录 instance_id 的 meta 键；运行时据此采纳已有节点。
 const PLACEMENT_ID_META := "gdesigner_placement_id"
+const PLACEMENT_LAYOUT_META := "gdesigner_layout_id"
 
 
 class PlacementInstanceMarker extends Node:
@@ -173,17 +174,31 @@ class PlacementSession extends RefCounted:
 		})
 
 
-static func find_placement_root(parent: Node, instance_id: int) -> Node:
+static func layout_identity(layout: GDLevelSceneRes) -> String:
+	if not layout.layout_id.is_empty():
+		return layout.layout_id
+	if not layout.resource_path.is_empty():
+		return layout.resource_path
+	return "memory_%d" % layout.get_instance_id()
+
+
+static func find_placement_root(parent: Node, instance_id: int, layout: GDLevelSceneRes = null) -> Node:
 	if parent == null or instance_id <= 0:
 		return null
-	return _find_placement_root(parent, instance_id)
+	var scene_root := parent
+	while scene_root != null and scene_root.scene_file_path.is_empty():
+		scene_root = scene_root.get_parent()
+	var allow_legacy := layout == null or (scene_root != null and not layout.scene_path.is_empty() and scene_root.scene_file_path == layout.scene_path)
+	return _find_placement_root(parent, instance_id, layout, allow_legacy)
 
 
-static func _find_placement_root(node: Node, instance_id: int) -> Node:
-	if int(node.get_meta(PLACEMENT_ID_META, 0)) == instance_id:
+static func _find_placement_root(node: Node, instance_id: int, layout: GDLevelSceneRes, allow_legacy: bool) -> Node:
+	var owner_id := str(node.get_meta(PLACEMENT_LAYOUT_META, ""))
+	var matches_layout := layout == null or owner_id == layout_identity(layout) or (owner_id.is_empty() and allow_legacy)
+	if matches_layout and int(node.get_meta(PLACEMENT_ID_META, 0)) == instance_id:
 		return node
 	for child in node.get_children():
-		var found := _find_placement_root(child, instance_id)
+		var found := _find_placement_root(child, instance_id, layout, allow_legacy)
 		if found != null:
 			return found
 	return null
@@ -203,24 +218,24 @@ static func load_session(options: SceneEditorBootstrapOptions) -> PlacementSessi
 			continue
 		var arch := arch_reg.find_by_stable_id(inst.archetype_stable_id)
 		# 编辑器拖进场景的节点已经在树里。这里采纳它们，避免运行时再生成一份。
-		var spawned: Node = find_placement_root(options.parent, inst.instance_id)
+		var spawned: Node = find_placement_root(options.parent, inst.instance_id, options.layout)
 		var created := spawned == null
 		if created:
-			var spawned_3d: Node3D = null
+			var raw: Node = null
 			if arch != null:
 				var ps := arch.editor_resolve_manufactured_prefab()
 				if ps != null:
-					var raw := ps.instantiate()
-					if raw is Node3D:
-						spawned_3d = raw
-					else:
-						spawned_3d = Node3D.new()
-						spawned_3d.add_child(raw)
-			if spawned_3d == null:
-				spawned_3d = GDEntityNode.new()
-			spawned = spawned_3d
+					raw = ps.instantiate()
+			if options.parent is Node2D:
+				spawned = raw if raw is Node2D else Node2D.new()
+			else:
+				spawned = raw if raw is Node3D else GDEntityNode.new()
+			if raw != null and raw != spawned:
+				spawned.add_child(raw)
 			spawned.name = GDPlacementData.PlacementInstanceIdRangeLogic.resolve_display_name(inst, arch)
 			options.parent.add_child(spawned)
+		spawned.set_meta(PLACEMENT_ID_META, inst.instance_id)
+		spawned.set_meta(PLACEMENT_LAYOUT_META, layout_identity(options.layout))
 
 		if spawned is Node3D:
 			var body := spawned as Node3D

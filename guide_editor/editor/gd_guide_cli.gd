@@ -67,8 +67,11 @@ static func _cmd_create(ctx: GDCliRoot.CliContext) -> String:
 	graph.set_display_name(gname)
 	graph.add_default_skeleton()
 	var asset_path := _asset_arg(ctx)
-	if asset_path.begins_with("res://"):
-		GDCliRoot.AtomCreator.ensure_dir(asset_path.get_base_dir())
-		ResourceSaver.save(graph, asset_path)
+	if not asset_path.is_empty():
+		if not (asset_path.begins_with("res://") or asset_path.begins_with("user://")):
+			return ctx.fail("asset.invalid", "资产路径必须以 res:// 或 user:// 开头")
+		var err := GDDocument.new(graph).save(asset_path)
+		if err != OK:
+			return ctx.fail("save.failed", "保存失败：%s（%s）" % [asset_path, error_string(err)])
 	GDGuideEditing.register_in_memory_graph(graph)
 	return ctx.ok({"path": asset_path})

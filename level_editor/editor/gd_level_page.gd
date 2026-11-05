@@ -76,7 +76,7 @@ func _build() -> void:
 	)
 	_inspector = GDLevelInspector.new(self, _form)
 	set_panes(GDEditorUi.pane(_archetype_list), _build_center(), GDEditorUi.pane(GDEditorUi.scroll_of(_form)))
-	GDLevelSceneDrop.bind_status(_on_drop_status)
+	GDLevelSceneDrop.bind_status(_on_drop_status, _on_scene_bound)
 	_show_tab(0)
 	_refresh()
 
@@ -160,9 +160,17 @@ func activate() -> void:
 
 
 func set_layout(new_layout: GDLevelSceneRes) -> void:
+	GDLevelSceneDrop.cancel()
+	if doc != null:
+		_pull_scene(doc)
 	_clear_selection()
+	var assigned_identity := new_layout != null and new_layout.layout_id.is_empty()
+	GDLevelSceneDrop.ensure_layout_identity(new_layout)
+	GDLevelSceneDrop.register_layout(new_layout)
 	open_document(new_layout)
 	if new_layout != null:
+		if assigned_identity and not new_layout.resource_path.is_empty():
+			doc.mark_unsaved()
 		new_layout.editor_reconcile_next_ids_after_load()
 		doc.on_restored = func() -> void: GDLevelSceneDrop.reconcile_scene(new_layout)
 	_refresh()
@@ -214,21 +222,26 @@ func _suggest_save_path(resource: Resource) -> String:
 	return "%s/%s.tres" % [LEVEL_DIR, resource.resource_name] if not resource.resource_name.is_empty() else ""
 
 
-## 保存前把在场景里手动挪过的位姿写回关卡。
-func _save(target: GDDocument) -> void:
+## The page save hook runs before the dirty check, including Save All and Run.
+func prepare_save(target: GDDocument) -> void:
 	_pull_scene(target)
-	super._save(target)
 
 
-func save_as_current() -> void:
-	if doc != null:
-		_pull_scene(doc)
-	super.save_as_current()
-
-
-func _pull_scene(target: GDDocument) -> void:
-	if GDLevelSceneDrop.pull_transforms_from_scene(target.resource as GDLevelSceneRes):
+func _pull_scene(target: GDDocument, scene_root: Node = null) -> void:
+	if GDLevelSceneDrop.pull_transforms_from_scene(target.resource as GDLevelSceneRes, scene_root):
 		target.commit("同步场景位姿")
+
+
+func capture_scene(scene_root: Node) -> void:
+	for candidate: GDDocument in _docs.values():
+		if GDLevelSceneDrop.is_bound_to_scene(candidate.resource as GDLevelSceneRes, scene_root):
+			_pull_scene(candidate, scene_root)
+
+
+func _on_scene_bound(bound_layout: GDLevelSceneRes) -> void:
+	var candidate: GDDocument = _docs.get(bound_layout)
+	if candidate != null:
+		candidate.commit("绑定关卡场景")
 
 
 # ── 查询 ──
@@ -462,7 +475,7 @@ func _camera_mark(index: int, pose: GDCameraPoseSystem.CameraPose) -> GDPlanView
 func _pick(kind: Kind, id: int) -> void:
 	select_item(kind, id)
 	if kind == Kind.PLACEMENT:
-		GDLevelSceneDrop.focus_instance(id)
+		GDLevelSceneDrop.focus_instance(id, layout)
 
 
 func _clear_selection() -> void:
@@ -507,7 +520,7 @@ func _on_plan_moved(kind: StringName, key: int, index: int, xz: Vector2) -> void
 		var inst := find_placement(key)
 		var pos := Vector3(xz.x, inst.position.y, xz.y)
 		layout.editor_replace_placement(key, inst.with_transform(pos, inst.euler_angles, inst.scale))
-		GDLevelSceneDrop.apply_transform(key, pos, inst.euler_angles, inst.scale)
+		GDLevelSceneDrop.apply_transform(key, pos, inst.euler_angles, inst.scale, layout)
 	else:
 		var knot_y: float = find_path(key).spline.knots[index].position.y
 		GDLevelInspector.set_knot(layout, key, index, &"position", Vector3(xz.x, knot_y, xz.y))
@@ -531,12 +544,17 @@ func place_at_view(archetype: GDArchetypeRes) -> void:
 func _place(archetype: GDArchetypeRes, point: Vector3) -> void:
 	if layout == null:
 		return
-	var result := GDLevelSceneDrop.place_archetype(layout, archetype, point)
-	if not bool(result.get("ok", false)):
-		say(str(result.get("error", "摆放失败")), &"warn")
-		return
-	_commit_if_placed()
-	select_item(Kind.PLACEMENT, int(result["instance_id"]))
+	var target := layout
+	GDLevelSceneDrop.request_scene_binding(target, func() -> void:
+		if layout != target:
+			return
+		var result := GDLevelSceneDrop.place_archetype(target, archetype, point)
+		if not bool(result.get("ok", false)):
+			say(str(result.get("error", "摆放失败")), &"warn")
+			return
+		_commit_if_placed()
+		select_item(Kind.PLACEMENT, int(result["instance_id"]))
+	)
 
 
 ## 视口拖放、编辑器里的撤销 / 重做都会改关卡；实例变了就记一步，让撤销栈和场景保持一致。
@@ -554,5 +572,10 @@ func _commit_if_placed() -> void:
 
 func _sync_to_scene() -> void:
 	if layout != null:
-		var result := GDLevelSceneDrop.sync_layout_to_scene(layout)
-		say(str(result.get("message", "")), &"ok" if bool(result.get("ok", false)) else &"warn")
+		var target := layout
+		GDLevelSceneDrop.request_scene_binding(target, func() -> void:
+			if layout != target:
+				return
+			var result := GDLevelSceneDrop.sync_layout_to_scene(target)
+			say(str(result.get("message", "")), &"ok" if bool(result.get("ok", false)) else &"warn")
+		)

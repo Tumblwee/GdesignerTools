@@ -14,6 +14,8 @@ signal state_changed
 
 const MAX_HISTORY := 128
 const MERGE_WINDOW_MS := 700
+static var _tracked_resources: Array[WeakRef] = []
+static var _saving_paths: Dictionary = {}
 
 var resource: Resource
 ## 撤销 / 重做写回模型之后调用，用于同步模型之外的状态（例如场景节点）。
@@ -47,6 +49,7 @@ var redo_label: String:
 
 func _init(p_resource: Resource) -> void:
 	resource = p_resource
+	_track_resource(resource)
 	_history.append(_entry(""))
 
 
@@ -82,23 +85,129 @@ func redo() -> bool:
 	return can_redo and _move_to(_cursor + 1)
 
 
-## path 为空时写回原路径。没有路径返回 ERR_FILE_BAD_PATH，由调用方决定是否弹“另存为”。
-func save(path: String = "") -> Error:
-	var target := path if not path.is_empty() else resource.resource_path
+func mark_unsaved() -> void:
+	_saved_cursor = -1
+	state_changed.emit()
+
+
+func mark_saved() -> void:
+	_saved_cursor = _cursor
+	state_changed.emit()
+
+
+## 同一路径只允许当前持有它的资源写回。覆盖其它文件必须由另存为显式授权。
+## 已被其它资源加载的路径始终拒绝，避免 take_over_path 抢走其它文档的路径。
+func can_save(path: String = "", allow_overwrite: bool = false) -> Error:
+	var target := normalized_path(path if not path.is_empty() else resource.resource_path)
 	if target.is_empty():
 		return ERR_FILE_BAD_PATH
-	DirAccess.make_dir_recursive_absolute(target.get_base_dir())
-	var err := ResourceSaver.save(resource, target, ResourceSaver.FLAG_CHANGE_PATH)
+	var target_key := path_key(target)
+	if _saving_paths.has(target_key):
+		return ERR_BUSY
+	for reference in _tracked_resources.duplicate():
+		var other := reference.get_ref() as Resource
+		if other == null:
+			_tracked_resources.erase(reference)
+		elif other != resource and not other.resource_path.is_empty() and path_key(other.resource_path) == target_key:
+			return ERR_ALREADY_EXISTS
+	if ResourceLoader.has_cached(target) and ResourceLoader.load(target) != resource:
+		return ERR_ALREADY_EXISTS
+	var same_path := not resource.resource_path.is_empty() and path_key(resource.resource_path) == path_key(target)
+	if not same_path and FileAccess.file_exists(target) and not allow_overwrite:
+		return ERR_ALREADY_EXISTS
+	return OK
+
+
+func owns_path(path: String) -> bool:
+	var target := normalized_path(path)
+	return not resource.resource_path.is_empty() and path_key(resource.resource_path) == path_key(target) \
+		and can_save(target, true) == OK
+
+
+func save(path: String = "", allow_overwrite: bool = false) -> Error:
+	var target := normalized_path(path if not path.is_empty() else resource.resource_path)
+	var check := can_save(target, allow_overwrite)
+	if check != OK:
+		if resource.resource_path.is_empty():
+			mark_unsaved()
+		return check
+	var directory_error := DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+	if directory_error != OK:
+		return directory_error
+	var target_key := path_key(target)
+	_saving_paths[target_key] = true
+	var err := ResourceSaver.save(resource, target)
+	_saving_paths.erase(target_key)
 	if err != OK:
 		return err
-	# FLAG_CHANGE_PATH 不会给从未保存过的资源设路径，这里补上，下次保存才会写回同一个文件。
+	# 只有写入成功后才接管路径，保存失败时保留原文档身份。
 	if resource.resource_path != target:
 		resource.take_over_path(target)
-	_saved_cursor = _cursor
+	_track_resource(resource)
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().update_file(target)
-	state_changed.emit()
+	mark_saved()
 	return OK
+
+
+static func normalized_path(path: String) -> String:
+	if path.is_empty():
+		return ""
+	var absolute := ProjectSettings.globalize_path(path.replace("\\", "/")).simplify_path()
+	if OS.has_feature("windows") and FileAccess.file_exists(absolute):
+		absolute = _existing_path_case(absolute)
+	var user_root := OS.get_user_data_dir().replace("\\", "/").simplify_path()
+	if path_key(absolute).begins_with(path_key(user_root) + "/"):
+		return "user://" + absolute.substr(user_root.length() + 1)
+	var project_root := ProjectSettings.globalize_path("res://").replace("\\", "/").trim_suffix("/")
+	if path_key(absolute).begins_with(path_key(project_root) + "/"):
+		return "res://" + absolute.substr(project_root.length() + 1)
+	return ProjectSettings.localize_path(absolute)
+
+
+static func path_key(path: String) -> String:
+	var absolute := ProjectSettings.globalize_path(path.replace("\\", "/")).simplify_path()
+	return absolute.to_lower() if OS.has_feature("windows") else absolute
+
+
+static func _track_resource(tracked: Resource) -> void:
+	for reference in _tracked_resources.duplicate():
+		var existing: Object = reference.get_ref()
+		if existing == null:
+			_tracked_resources.erase(reference)
+		elif existing == tracked:
+			return
+	_tracked_resources.append(weakref(tracked))
+
+
+## Windows 的资源缓存区分大小写，已有文件先恢复磁盘上的目录名和文件名。
+static func _existing_path_case(absolute: String) -> String:
+	var parts := absolute.split("/", false)
+	var current := parts[0] + "/"
+	var first := 1
+	if absolute.begins_with("//"):
+		current = "//" + parts[0] + "/" + parts[1] + "/"
+		first = 2
+	# 从已知根目录向下查找，避免沙箱里枚举无权访问的盘符和用户目录。
+	for root_path in [ProjectSettings.globalize_path("res://"), OS.get_user_data_dir(), OS.get_environment("TEMP")]:
+		var anchor := str(root_path).replace("\\", "/").trim_suffix("/")
+		if not anchor.is_empty() and path_key(absolute).begins_with(path_key(anchor) + "/"):
+			current = anchor
+			parts = absolute.substr(anchor.length() + 1).split("/", false)
+			first = 0
+			break
+	for index in range(first, parts.size()):
+		var segment := parts[index]
+		var directory := DirAccess.open(current)
+		if directory != null:
+			var names := directory.get_directories()
+			names.append_array(directory.get_files())
+			for name in names:
+				if name.nocasecmp_to(segment) == 0:
+					segment = name
+					break
+		current = current.path_join(segment)
+	return current
 
 
 func _entry(label: String) -> Dictionary:

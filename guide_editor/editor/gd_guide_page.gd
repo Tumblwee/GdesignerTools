@@ -193,7 +193,25 @@ func cli_context(command: String) -> PackedStringArray:
 
 
 func _suggest_save_path(resource: Resource) -> String:
-	return "%s/Guide_%d.tres" % [GUIDE_ROOT, (resource as GDGuideGraphRes).graph_id]
+	return GDGuideEditing.suggest_save_path(resource as GDGuideGraphRes, GUIDE_ROOT)
+
+
+func _save(target: GDDocument) -> void:
+	var saved := target.resource as GDGuideGraphRes
+	if GDGuideEditing.conflicting_graph(saved, saved.graph_id) != null:
+		if saved.resource_path.is_empty():
+			target.mark_unsaved()
+		say("图 ID %d 重复，请修改 ID 后再保存" % saved.graph_id, &"danger")
+		return
+	super(target)
+
+
+func _save_as(target: GDDocument, path: String, allow_overwrite: bool = false) -> Error:
+	var saved := target.resource as GDGuideGraphRes
+	if GDGuideEditing.conflicting_graph(saved, saved.graph_id) != null:
+		say("图 ID %d 重复，请修改 ID 后再保存" % saved.graph_id, &"danger")
+		return ERR_INVALID_DATA
+	return target.save(path, allow_overwrite)
 
 
 # ── 公开接口 ──
@@ -203,6 +221,7 @@ func load_graph(new_graph: GDGuideGraphRes) -> void:
 		GDGuideSchemaMigrator.migrate(new_graph)
 		if new_graph.atoms.is_empty():
 			new_graph.add_default_skeleton()
+		GDGuideEditing.register_in_memory_graph(new_graph)
 	if _runner.is_running and _runner.graph != new_graph:
 		_runner.stop()
 	_selected_ids.clear()
@@ -239,8 +258,8 @@ func is_read_only() -> bool:
 func _refresh() -> void:
 	_show_run = _show_run and _runner.is_running
 	var g := graph
-	_report = GDGuideValidation.GuideGraphValidator.validate(g, [], _host.conditions) if g != null else null
 	_list.refresh(g)
+	_report = _validate_graph(g) if g != null else null
 	_center_empty.visible = g == null
 	_canvas_box.visible = g != null
 	var missing := g.missing_atom_count if g != null else 0
@@ -251,6 +270,16 @@ func _refresh() -> void:
 	_drawer.set_issues(_report, g)
 	_refresh_toolbar()
 	_refresh_inspector()
+
+
+func _validate_graph(g: GDGuideGraphRes) -> GDGuideValidation.GuideValidationReport:
+	var report := GDGuideValidation.GuideGraphValidator.validate(g, [], _host.conditions)
+	var other := GDGuideEditing.conflicting_graph(g, g.graph_id)
+	if other != null:
+		report.add(GDGuideValidation.GuideValidationIssue.new(GDGuideValidation.GuideValidationIssue.Severity.ERROR,
+			GDGuideValidation.GuideGraphValidator.CODE_LIBRARY_DUPLICATE_ID,
+			"图 ID %d 已被「%s」占用，请修改 ID" % [g.graph_id, other.display_name]))
+	return report
 
 
 func _view_state() -> GDGuideGraphView.ViewState:
@@ -509,8 +538,8 @@ func _insert_click(node_id: int) -> void:
 
 
 func _set_graph_id(new_id: int) -> void:
-	var other := GDGuideEditing.find_graph(new_id)
-	if other != null and other != graph:
+	var other := GDGuideEditing.conflicting_graph(graph, new_id)
+	if other != null:
 		say("图 ID %d 已被「%s」占用" % [new_id, other.display_name], &"danger")
 		return
 	graph.set_graph_id(new_id)
@@ -580,7 +609,7 @@ func _run_from(node_id: int) -> void:
 
 ## 有校验错误时不跑，直接打开问题列表。
 func _check_runnable() -> bool:
-	_report = GDGuideValidation.GuideGraphValidator.validate(graph, [], _host.conditions)
+	_report = _validate_graph(graph)
 	if not _report.has_errors:
 		return true
 	_drawer.open_tab(GDGuideDrawer.Tab.ISSUES)

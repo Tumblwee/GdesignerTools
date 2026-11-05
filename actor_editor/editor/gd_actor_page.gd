@@ -178,8 +178,19 @@ func _new_library() -> void:
 		set_library(created)
 		save_current()
 	, func(values: Dictionary) -> String:
-		return "" if GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(str(values["module"]), GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME) else "模块名必须是合法标识符"
+		return _library_name_error(str(values["module"]))
 	)
+
+
+func _library_name_error(module_name: String) -> String:
+	if not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(module_name, GDKeywordCatalogSystem.KeywordIdentifierUtil.IdentifierPolicy.TYPE_NAME):
+		return "模块名必须是合法标识符"
+	var asset_name := "ActorLibrary_%s" % module_name
+	for opened: Resource in _docs:
+		if opened.resource_name == asset_name:
+			return "已有同名演员库"
+	var path := "res://game_res/actors/%s.tres" % asset_name
+	return "文件已存在：%s" % path if FileAccess.file_exists(path) else ""
 
 
 func _open_library() -> void:

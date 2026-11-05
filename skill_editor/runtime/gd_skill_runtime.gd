@@ -4,7 +4,7 @@ extends RefCounted
 
 ## 技能运行时驱动与服务（对应 SkillRunner / SkillRuntimeService / SkillCooldownTable / GameplayEffectApplier / ActiveEffect / SkillContext / CastInstanceId）
 ## 核心不变量：
-##   1. 校验顺序：Cost -> Cooldown -> RequiredTags/BlockedTags
+##   1. 先完成 Cost -> Cooldown -> RequiredTags/BlockedTags 校验，通过后只扣费一次
 ##   2. 同 caster 重复施法打断旧运行（广播 SkillEndedEvent("interrupted-by-recast")）
 ##   3. 全局派发顺序 BuildDispatchOrder：合并所有 Group 下所有 Track 的 Clip，按 StartMs 升序 + 同刻 tie-break（逻辑先于表现 -> 全局 track 序 -> clip 序）
 
@@ -101,6 +101,75 @@ class SkillCooldownTable extends RefCounted:
 
 	func clear() -> void:
 		_end_times.clear()
+
+
+## 同一事件总线共享标签计数，效果叠加时只在最后一个来源移除后失去标签。
+class GameplayTagStore extends RefCounted:
+	const BUS_META := &"gdesigner_gameplay_tag_store"
+	var _owners: Dictionary = {} # owner_id -> tag_name -> {tag, count}
+	var _bus_ref: WeakRef
+
+	func _init(bus: GDCoreServices.EventBus) -> void:
+		_bus_ref = weakref(bus)
+
+	static func for_bus(bus: GDCoreServices.EventBus) -> GameplayTagStore:
+		if bus.has_meta(BUS_META):
+			var existing: Variant = bus.get_meta(BUS_META)
+			if existing is GameplayTagStore:
+				return existing
+		var created := GameplayTagStore.new(bus)
+		bus.set_meta(BUS_META, created)
+		return created
+
+	func add_tag(owner_id: int, tag: GDGameplayTagRes) -> bool:
+		if tag == null or tag.tag_name.strip_edges().is_empty():
+			return false
+		var tags: Dictionary = _owners.get(owner_id, {})
+		var key := tag.tag_name.strip_edges()
+		var entry: Dictionary = tags.get(key, {"tag": tag, "count": 0})
+		entry["count"] = int(entry["count"]) + 1
+		tags[key] = entry
+		_owners[owner_id] = tags
+		if int(entry["count"]) == 1:
+			_publish(EVENT_GAMEPLAY_TAG_ADDED, owner_id, tag)
+		return true
+
+	func remove_tag(owner_id: int, tag: GDGameplayTagRes) -> bool:
+		if tag == null:
+			return false
+		var tags: Dictionary = _owners.get(owner_id, {})
+		var key := tag.tag_name.strip_edges()
+		if not tags.has(key):
+			return false
+		var entry: Dictionary = tags[key]
+		entry["count"] = int(entry["count"]) - 1
+		if int(entry["count"]) == 0:
+			tags.erase(key)
+			if tags.is_empty():
+				_owners.erase(owner_id)
+			_publish(EVENT_GAMEPLAY_TAG_REMOVED, owner_id, entry["tag"])
+		return true
+
+	func has_tag(owner_id: int, tag: GDGameplayTagRes) -> bool:
+		if tag == null or tag.tag_name.strip_edges().is_empty():
+			return false
+		var expected_name := tag.tag_name.strip_edges()
+		var tags: Dictionary = _owners.get(owner_id, {})
+		for entry in tags.values():
+			var cursor: GDGameplayTagRes = entry["tag"]
+			for _depth in range(64):
+				if cursor == null:
+					break
+				var held_name := cursor.tag_name.strip_edges()
+				if cursor == tag or held_name == expected_name or held_name.begins_with(expected_name + "."):
+					return true
+				cursor = cursor.parent_tag
+		return false
+
+	func _publish(event_name: String, owner_id: int, tag: GDGameplayTagRes) -> void:
+		var bus := _bus_ref.get_ref() as GDCoreServices.EventBus
+		if bus != null:
+			bus.publish(event_name, {"owner_id": owner_id, "tag": tag})
 
 
 ## SkillRunner 对应：全局排序 BuildDispatchOrder + 时间轴推进
@@ -227,6 +296,9 @@ class SkillRunner extends RefCounted:
 
 ## SkillRuntimeService 对应
 class SkillRuntimeService extends RefCounted:
+	var tag_store: GameplayTagStore
+	## 可选的宿主标签查询，签名为 (owner_id, tag) -> bool。
+	var tag_query: Callable = Callable()
 	var _bus: GDCoreServices.EventBus = null
 	var _now_provider: Callable = Callable()
 	var _attribute_sets: Dictionary = {} # owner_id (int) -> GDAttributeSystem.AttributeSet
@@ -240,9 +312,11 @@ class SkillRuntimeService extends RefCounted:
 	var _disposed: bool = false
 	var _cb_node_fired: Callable
 	var _cb_skill_ended: Callable
+	var _casting: Dictionary = {} # caster_id -> true while a synchronous cast transaction is in progress
 
 	func _init(p_bus: GDCoreServices.EventBus, p_now_provider: Callable = Callable()) -> void:
 		_bus = p_bus if p_bus != null else GDCoreServices.get_event_bus()
+		tag_store = GameplayTagStore.for_bus(_bus)
 		_now_provider = p_now_provider
 		_cb_node_fired = Callable(self, "_handle_node_fired")
 		_cb_skill_ended = Callable(self, "_handle_skill_ended")
@@ -260,6 +334,14 @@ class SkillRuntimeService extends RefCounted:
 		_preview_ignore_cooldown = ignore_cooldown
 
 	func try_cast(caster_id: int, target_id: int, skill: GDSkillRes) -> bool:
+		if _disposed or _casting.has(caster_id):
+			return false
+		_casting[caster_id] = true
+		var accepted := _try_cast(caster_id, target_id, skill)
+		_casting.erase(caster_id)
+		return accepted
+
+	func _try_cast(caster_id: int, target_id: int, skill: GDSkillRes) -> bool:
 		if skill == null:
 			GDGameLogger.log_warning("[SkillRuntimeService] TryCast called with null skill")
 			return false
@@ -268,12 +350,31 @@ class SkillRuntimeService extends RefCounted:
 			"target_id": target_id,
 			"skill": skill,
 		})
-		if not _validate_cost(caster_id, skill):
+		if _disposed:
 			return false
-		if not _validate_cooldown(caster_id, skill):
+		var rejection := _cost_failure(caster_id, skill)
+		if rejection.is_empty():
+			rejection = _cooldown_failure(caster_id, skill)
+		if rejection.is_empty():
+			rejection = _tag_failure(caster_id, skill)
+		if not rejection.is_empty():
+			_bus.publish(EVENT_SKILL_ENDED, {
+				"caster_id": caster_id,
+				"skill": skill,
+				"reason": rejection,
+				"cast_instance_id": null,
+			})
 			return false
-		if not _validate_required_tags(caster_id, skill):
+		if _disposed:
 			return false
+
+		# 同步事件回调可能再次请求施放；try_cast 的同施放者锁覆盖扣费与派发。
+		if not _preview_ignore_cost and skill.cost != null and skill.cost.has_cost:
+			var cost_set: GDAttributeSystem.AttributeSet = _attribute_sets[caster_id]
+			var cost_kind := int(GDSkillTypes.try_map_attribute_name(skill.cost.attribute_name)["kind"])
+			cost_set.apply_delta(cost_kind, -skill.cost.amount, "skill-cost")
+		if _disposed:
+			return true
 
 		if _active_skills.has(caster_id):
 			var existing: Dictionary = _active_skills[caster_id]
@@ -282,6 +383,8 @@ class SkillRuntimeService extends RefCounted:
 				_interrupt_active_cast(caster_id, skill, existing)
 			else:
 				_active_skills.erase(caster_id)
+		if _disposed:
+			return true
 
 		var start_t := _now()
 		var cast_id := CastInstanceId.next()
@@ -298,6 +401,8 @@ class SkillRuntimeService extends RefCounted:
 		_active_skills[caster_id] = {"cast_id": cast_id, "runner": runner}
 
 		_start_cooldown_if_needed(caster_id, skill, start_t)
+		if _disposed:
+			return true
 		_bus.publish(EVENT_SKILL_CASTED, {
 			"caster_id": caster_id,
 			"target_id": target_id,
@@ -363,58 +468,66 @@ class SkillRuntimeService extends RefCounted:
 		_bus.unsubscribe(EVENT_SKILL_ENDED, _cb_skill_ended)
 		cancel_all_active_casts()
 		_teleport_origins.clear()
+		_attribute_sets.clear()
+		_node_lookup.clear()
 
 	func _now() -> float:
 		if _now_provider.is_valid():
 			return float(_now_provider.call())
 		return float(Time.get_ticks_msec()) / 1000.0
 
-	func _validate_cost(caster_id: int, skill: GDSkillRes) -> bool:
+	func _cost_failure(caster_id: int, skill: GDSkillRes) -> String:
 		var c := skill.cost
-		if c == null or not c.has_cost or _preview_ignore_cost:
-			return true
-		if not _attribute_sets.has(caster_id):
-			_bus.publish(EVENT_ATTRIBUTE_CHANGED, {
-				"owner_id": caster_id,
-				"attribute_name": c.attribute_name,
-				"old_value": 100.0,
-				"new_value": 100.0 - c.amount,
-				"reason": "skill-cost",
-			})
-			return true
-		var set_obj: GDAttributeSystem.AttributeSet = _attribute_sets[caster_id]
+		if c == null or _preview_ignore_cost:
+			return ""
+		if not is_finite(c.amount) or c.amount < 0.0:
+			return "cost-invalid"
+		if not c.has_cost:
+			return ""
+		var set_obj: GDAttributeSystem.AttributeSet = _attribute_sets.get(caster_id)
+		if set_obj == null:
+			return "cost-attributes-missing"
 		var mapped := GDSkillTypes.try_map_attribute_name(c.attribute_name)
 		if not bool(mapped.get("ok", false)):
-			return true
+			return "cost-attribute-unknown"
 		var kind := int(mapped["kind"])
+		var value_type := set_obj.try_get_value_type(kind)
+		if not bool(value_type["ok"]):
+			return "cost-attribute-missing"
+		if int(value_type["value_type"]) not in [GDCoreTypes.KeywordValueType.INT, GDCoreTypes.KeywordValueType.FLOAT]:
+			return "cost-attribute-invalid"
 		var cur := set_obj.get_current(kind)
-		if cur < c.amount:
-			_bus.publish(EVENT_SKILL_ENDED, {
-				"caster_id": caster_id,
-				"skill": skill,
-				"reason": "cost-insufficient",
-				"cast_instance_id": null,
-			})
-			return false
-		set_obj.apply_delta(kind, -c.amount, "skill-cost")
-		return true
+		if not is_finite(cur) or cur < c.amount:
+			return "cost-insufficient"
+		return ""
 
-	func _validate_cooldown(caster_id: int, skill: GDSkillRes) -> bool:
+	func _cooldown_failure(caster_id: int, skill: GDSkillRes) -> String:
 		var cd := skill.cooldown
-		if cd == null or not cd.has_cooldown or _preview_ignore_cooldown:
-			return true
+		if cd == null or _preview_ignore_cooldown:
+			return ""
+		if not is_finite(cd.duration_seconds) or cd.duration_seconds < 0.0:
+			return "cooldown-invalid"
+		if not cd.has_cooldown:
+			return ""
 		if _cooldown_table.is_on_cooldown(caster_id, cd.cd_group, _now()):
-			_bus.publish(EVENT_SKILL_ENDED, {
-				"caster_id": caster_id,
-				"skill": skill,
-				"reason": "cooldown-blocked",
-				"cast_instance_id": null,
-			})
-			return false
-		return true
+			return "cooldown-blocked"
+		return ""
 
-	func _validate_required_tags(_caster_id: int, _skill: GDSkillRes) -> bool:
-		return true
+	func _tag_failure(caster_id: int, skill: GDSkillRes) -> String:
+		for tag in skill.required_tags:
+			if not tag is GDGameplayTagRes or tag.tag_name.strip_edges().is_empty():
+				return "tag-invalid"
+			if not _has_tag(caster_id, tag):
+				return "required-tag-missing"
+		for tag in skill.blocked_tags:
+			if not tag is GDGameplayTagRes or tag.tag_name.strip_edges().is_empty():
+				return "tag-invalid"
+			if _has_tag(caster_id, tag):
+				return "blocked-tag-present"
+		return ""
+
+	func _has_tag(owner_id: int, tag: GDGameplayTagRes) -> bool:
+		return tag_store.has_tag(owner_id, tag) or (tag_query.is_valid() and bool(tag_query.call(owner_id, tag)))
 
 	func _start_cooldown_if_needed(caster_id: int, skill: GDSkillRes, now_t: float) -> void:
 		if _preview_ignore_cooldown:
@@ -460,20 +573,14 @@ class SkillRuntimeService extends RefCounted:
 		var caster_id := int(evt.get("caster_id", 0))
 		var target_id := int(evt.get("target_id", 0))
 		var atk := 0.0
-		if _attribute_sets.has(caster_id):
-			atk = (_attribute_sets[caster_id] as GDAttributeSystem.AttributeSet).get_current(GDSkillTypes.AttributeKind.ATTACK_POWER)
+		var caster_set: GDAttributeSystem.AttributeSet = _attribute_sets.get(caster_id)
+		if caster_set != null and caster_set.has_attribute(GDSkillTypes.AttributeKind.ATTACK_POWER):
+			atk = caster_set.get_current(GDSkillTypes.AttributeKind.ATTACK_POWER)
 		var dmg := clip.base_damage + roundi(clip.coefficient * atk)
 		var final_target := target_id if target_id != 0 else caster_id
-		if _attribute_sets.has(final_target):
-			(_attribute_sets[final_target] as GDAttributeSystem.AttributeSet).apply_delta(GDSkillTypes.AttributeKind.HEALTH, -float(dmg), "damage")
-		else:
-			_bus.publish(EVENT_ATTRIBUTE_CHANGED, {
-				"owner_id": final_target,
-				"attribute_name": "HP",
-				"old_value": 100.0,
-				"new_value": 100.0 - float(dmg),
-				"reason": "damage",
-			})
+		var target_set: GDAttributeSystem.AttributeSet = _attribute_sets.get(final_target)
+		if target_set != null and target_set.has_attribute(GDSkillTypes.AttributeKind.HEALTH):
+			target_set.apply_delta(GDSkillTypes.AttributeKind.HEALTH, -float(dmg), "damage")
 
 	func _process_effect(evt: Dictionary, clip: GDSkillClips.ApplyEffectClip) -> void:
 		if clip.effect == null:
@@ -484,6 +591,8 @@ class SkillRuntimeService extends RefCounted:
 		var dur := 0.0 if clip.is_instant else clip.effect.duration
 		_bus.publish(EVENT_GAMEPLAY_EFFECT_APPLIED, {
 			"owner_id": owner_id,
+			"caster_id": int(evt.get("caster_id", 0)),
+			"source_caster_id": int(evt.get("caster_id", 0)),
 			"effect": clip.effect,
 			"duration": dur,
 		})
@@ -539,6 +648,7 @@ class ActiveEffect extends RefCounted:
 	var remaining_ms: float = 0.0
 	var next_tick_ms: float = INF
 	var handles: Array[AppliedModifierHandle] = []
+	var granted_tags: Array[GDGameplayTagRes] = []
 
 	func _init(
 		p_eff: GDGameplayEffectRes,
@@ -555,6 +665,7 @@ class ActiveEffect extends RefCounted:
 
 
 class GameplayEffectApplier extends RefCounted:
+	var tag_store: GameplayTagStore
 	var _bus: GDCoreServices.EventBus = null
 	var _attribute_sets: Dictionary = {} # owner_id -> GDAttributeSystem.AttributeSet
 	var _active: Array[ActiveEffect] = []
@@ -567,6 +678,7 @@ class GameplayEffectApplier extends RefCounted:
 
 	func _init(p_bus: GDCoreServices.EventBus, p_attr_sets: Dictionary = {}) -> void:
 		_bus = p_bus if p_bus != null else GDCoreServices.get_event_bus()
+		tag_store = GameplayTagStore.for_bus(_bus)
 		_attribute_sets = p_attr_sets
 		_cb_applied = Callable(self, "_handle_effect_applied")
 		_bus.subscribe(EVENT_GAMEPLAY_EFFECT_APPLIED, _cb_applied)
@@ -574,28 +686,42 @@ class GameplayEffectApplier extends RefCounted:
 	func register_attribute_set(owner_id: int, attr_set: GDAttributeSystem.AttributeSet) -> void:
 		_attribute_sets[owner_id] = attr_set
 
-	func try_apply(owner_id: int, source_caster_id: int, effect: GDGameplayEffectRes) -> bool:
-		if effect == null or not _attribute_sets.has(owner_id):
+	func try_apply(owner_id: int, source_caster_id: int, effect: GDGameplayEffectRes, duration_override: Variant = null) -> bool:
+		if _disposed or effect == null or not _attribute_sets.has(owner_id):
 			return false
 		var set_obj: GDAttributeSystem.AttributeSet = _attribute_sets[owner_id]
 		if set_obj == null:
 			return false
-		if is_zero_approx(effect.duration):
+		var duration := effect.duration if duration_override == null else float(duration_override)
+		if not is_finite(duration) or not is_finite(effect.period) or effect.period < 0.0:
+			return false
+		if is_zero_approx(duration):
 			_apply_instant(set_obj, effect)
 			return true
-		var rem_ms := INF if effect.duration < 0.0 else effect.duration * 1000.0
+		var rem_ms := INF if duration < 0.0 else duration * 1000.0
 		var next_ms := effect.period * 1000.0 if effect.period > 0.0 else INF
 		var active := ActiveEffect.new(effect, owner_id, source_caster_id, rem_ms, next_ms)
-		_apply_durational_modifiers(set_obj, effect, active)
 		_active.append(active)
+		_apply_durational_modifiers(set_obj, effect, active)
+		if _disposed:
+			return false
+		for tag in effect.granted_tags:
+			if tag != null and not tag.tag_name.strip_edges().is_empty():
+				active.granted_tags.append(tag)
+				tag_store.add_tag(owner_id, tag)
+				if _disposed:
+					return false
 		return true
 
 	func snapshot() -> Array[ActiveEffect]:
 		return _active.duplicate()
 
 	func do_tick(delta_ms: float) -> void:
-		for i in range(_active.size() - 1, -1, -1):
-			var ae := _active[i]
+		if _disposed or not is_finite(delta_ms) or delta_ms < 0.0:
+			return
+		for ae: ActiveEffect in _active.duplicate():
+			if _disposed:
+				return
 			if not is_inf(ae.remaining_ms):
 				ae.remaining_ms -= delta_ms
 			ae.next_tick_ms -= delta_ms
@@ -604,21 +730,27 @@ class GameplayEffectApplier extends RefCounted:
 					_apply_periodic_modifiers(_attribute_sets[ae.owner_id], ae.effect)
 				ae.next_tick_ms += ae.effect.period * 1000.0
 			if ae.remaining_ms <= 0.0:
+				_active.erase(ae)
 				if _attribute_sets.has(ae.owner_id):
 					_revert_modifiers(_attribute_sets[ae.owner_id], ae)
+				_remove_granted_tags(ae)
 				_bus.publish(EVENT_GAMEPLAY_EFFECT_EXPIRED, {
 					"owner_id": ae.owner_id,
 					"effect": ae.effect,
 					"reason": "duration-expired",
 				})
-				_active.remove_at(i)
 
 	func dispose() -> void:
 		if _disposed:
 			return
 		_disposed = true
 		_bus.unsubscribe(EVENT_GAMEPLAY_EFFECT_APPLIED, _cb_applied)
+		var effects := _active.duplicate()
 		_active.clear()
+		for active: ActiveEffect in effects:
+			if _attribute_sets.get(active.owner_id) != null:
+				_revert_modifiers(_attribute_sets[active.owner_id], active)
+			_remove_granted_tags(active)
 
 	func _handle_effect_applied(evt: Variant) -> void:
 		if not (evt is Dictionary):
@@ -626,7 +758,13 @@ class GameplayEffectApplier extends RefCounted:
 		var d := evt as Dictionary
 		var eff = d.get("effect", null)
 		if eff is GDGameplayEffectRes:
-			try_apply(int(d.get("owner_id", 0)), 0, eff)
+			var caster_id := int(d.get("source_caster_id", d.get("caster_id", 0)))
+			try_apply(int(d.get("owner_id", 0)), caster_id, eff, d.get("duration"))
+
+	func _remove_granted_tags(active: ActiveEffect) -> void:
+		for tag in active.granted_tags:
+			tag_store.remove_tag(active.owner_id, tag)
+		active.granted_tags.clear()
 
 	func _apply_instant(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes) -> void:
 		for m in effect.modifiers:
@@ -646,6 +784,8 @@ class GameplayEffectApplier extends RefCounted:
 
 	func _apply_durational_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes, active: ActiveEffect) -> void:
 		for m in effect.modifiers:
+			if _disposed:
+				return
 			if m == null:
 				continue
 			var mapped := GDSkillTypes.try_map_attribute_name(m.attribute_name)
@@ -654,11 +794,11 @@ class GameplayEffectApplier extends RefCounted:
 			var kind := int(mapped["kind"])
 			match m.op:
 				GDSkillTypes.ModifierOp.ADD:
+					active.handles.append(AppliedModifierHandle.new(kind, m.op, m.magnitude))
 					set_obj.apply_delta(kind, m.magnitude, "effect-applied")
-					active.handles.append(AppliedModifierHandle.new(kind, m.op, m.magnitude))
 				GDSkillTypes.ModifierOp.MULTIPLY:
-					set_obj.add_modifier(kind, 0.0, m.magnitude, "effect-applied")
 					active.handles.append(AppliedModifierHandle.new(kind, m.op, m.magnitude))
+					set_obj.add_modifier(kind, 0.0, m.magnitude, "effect-applied")
 
 	func _apply_periodic_modifiers(set_obj: GDAttributeSystem.AttributeSet, effect: GDGameplayEffectRes) -> void:
 		for m in effect.modifiers:

@@ -192,7 +192,8 @@ static func _inherits(script: Script, base: Script) -> bool:
 static func register_in_memory_skill(skill: GDSkillRes) -> void:
 	if skill != null:
 		unregister_in_memory_skill(skill)
-		_in_memory_skills[skill.unique_name] = skill
+		var key := skill.unique_name if not _in_memory_skills.has(skill.unique_name) else "@conflict:%d" % skill.get_instance_id()
+		_in_memory_skills[key] = skill
 
 ## 改名或删除后调用：登记键是旧的 unique_name，按对象移除。
 static func unregister_in_memory_skill(skill: GDSkillRes) -> void:
@@ -200,18 +201,26 @@ static func unregister_in_memory_skill(skill: GDSkillRes) -> void:
 		if _in_memory_skills[key] == skill:
 			_in_memory_skills.erase(key)
 
-## 内存中登记的技能 + root_dir 下全部 Skill_*.tres / .res（按 unique_name 去重，内存优先）。
+static func reindex_in_memory_skills() -> void:
+	var skills := _in_memory_skills.values()
+	_in_memory_skills.clear()
+	for skill: GDSkillRes in skills:
+		register_in_memory_skill(skill)
+
+## 同名的内存文档仍保留，页面可以显示并修复撤销造成的身份冲突。
 static func get_all_known_skills(root_dir: String = DEFAULT_MODULE_ROOT) -> Array[GDSkillRes]:
+	reindex_in_memory_skills()
 	var result: Array[GDSkillRes] = []
 	var seen := {}
 	for s: GDSkillRes in _in_memory_skills.values():
-		if s != null and not seen.has(s.unique_name):
+		if s != null and not result.has(s):
 			seen[s.unique_name] = true
 			result.append(s)
 	_scan_skills_in_dir(root_dir, seen, result)
 	return result
 
 static func find_skill_by_query(query: String, root: String = DEFAULT_MODULE_ROOT) -> GDSkillRes:
+	reindex_in_memory_skills()
 	var q := query.strip_edges()
 	if _in_memory_skills.has(q):
 		return _in_memory_skills[q]
@@ -234,9 +243,11 @@ static func skill_asset_path(unique_name: String, project_root: String = DEFAULT
 ## 保存到 <project_root>/skill/<unique_name>.tres，并登记到内存注册表。
 static func save_skill(skill: GDSkillRes, project_root: String = DEFAULT_MODULE_ROOT) -> Dictionary:
 	var path := skill_asset_path(skill.unique_name, project_root)
-	GDCliRoot.AtomCreator.ensure_dir(path.get_base_dir())
-	skill.resource_name = skill.unique_name
-	var err := ResourceSaver.save(skill, path)
+	var document := GDDocument.new(skill)
+	var err := document.can_save(path)
+	if err == OK:
+		skill.resource_name = skill.unique_name
+		err = document.save(path)
 	if err != OK:
 		return {"ok": false, "path": path, "error": error_string(err)}
 	register_in_memory_skill(skill)

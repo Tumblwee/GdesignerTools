@@ -101,8 +101,14 @@ func save_current() -> void:
 
 func save_all() -> void:
 	for candidate: GDDocument in _docs.values():
+		prepare_save(candidate)
 		if candidate.dirty:
 			_save(candidate)
+
+
+## 先同步场景等外部状态，再决定文档是否需要保存。
+func prepare_save(_target: GDDocument) -> void:
+	pass
 
 
 func unsaved_titles() -> PackedStringArray:
@@ -130,28 +136,66 @@ func doc_title(resource: Resource) -> String:
 func save_as_current() -> void:
 	if doc == null:
 		return
-	var target := doc
-	GDDialogs.save_file(self, "另存为", PackedStringArray(["*.tres ; Godot 资源"]), _suggested_or_default(target.resource), func(path: String) -> void:
-		_report_save(target, target.save(path))
+	_show_save_as(doc)
+
+
+func _show_save_as(target: GDDocument, suggested: String = "") -> void:
+	var initial := suggested if not suggested.is_empty() else _suggested_or_default(target.resource)
+	GDDialogs.save_file(self, "另存为", PackedStringArray(["*.tres ; Godot 资源"]), initial, func(path: String) -> void:
+		# FileDialog 在已有文件时先询问覆盖。其它已加载文档仍由 GDDocument 拒绝。
+		_report_save(target, _save_as(target, path, true), path)
 	)
 
 
+func _save_as(target: GDDocument, path: String, allow_overwrite: bool = false) -> Error:
+	prepare_save(target)
+	return target.save(path, allow_overwrite)
+
+
 func _save(target: GDDocument) -> void:
+	prepare_save(target)
 	if target.resource.resource_path.is_empty():
 		var suggested := _suggest_save_path(target.resource)
 		if suggested.is_empty():
-			save_as_current()
+			_show_save_as(target)
 			return
-		_report_save(target, target.save(suggested))
+		_report_save(target, target.save(suggested), suggested)
 	else:
 		_report_save(target, target.save())
 
 
-func _report_save(target: GDDocument, err: Error) -> void:
+func _report_save(target: GDDocument, err: Error, attempted_path: String = "") -> void:
 	if err == OK:
 		say("已保存 %s" % target.resource.resource_path, &"ok")
 	else:
+		if target.resource.resource_path.is_empty():
+			target.mark_unsaved()
 		say("保存失败：%s（%s）" % [target.resource.resource_path, error_string(err)], &"danger")
+		if err == ERR_ALREADY_EXISTS and is_inside_tree():
+			_show_save_conflict(target, attempted_path if not attempted_path.is_empty() else _suggested_or_default(target.resource))
+
+
+func _alternative_save_path(target: GDDocument, attempted_path: String) -> String:
+	var suffix := 2
+	var extension := attempted_path.get_extension()
+	var stem := attempted_path.get_basename()
+	var candidate := "%s_%d.%s" % [stem, suffix, extension]
+	while target.can_save(candidate) != OK:
+		suffix += 1
+		candidate = "%s_%d.%s" % [stem, suffix, extension]
+	return candidate
+
+
+func _show_save_conflict(target: GDDocument, attempted_path: String) -> void:
+	var alternative := _alternative_save_path(target, attempted_path)
+	var dialog := GDDialogs.confirm(self, "保存路径已占用", "文件已存在或已被其它文档打开。请选择新的保存位置。\n%s" % attempted_path,
+		"另存为…", func() -> void: _show_save_as(target, alternative))
+	dialog.add_button("保存为 %s" % alternative.get_file(), false, "unique")
+	dialog.custom_action.connect(func(action: StringName) -> void:
+		if action == &"unique":
+			dialog.hide()
+			_report_save(target, _save_as(target, alternative), alternative)
+	)
 
 
 func _suggested_or_default(resource: Resource) -> String:

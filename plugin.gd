@@ -12,6 +12,7 @@ const MENU_ITEMS := ["关卡编辑器", "演员编辑器", "技能编辑器", "�
 var _window: GdesignerToolsWindow = null
 var _drop_host: GDLevelSceneDrop.Host = null
 var _toolbar_btn: Button = null
+var _previous_scene: WeakRef = null
 
 
 func _enter_tree() -> void:
@@ -26,6 +27,9 @@ func _enter_tree() -> void:
 	GDLevelSceneDrop.bind_plugin(self, _drop_host)
 	_window = GdesignerToolsWindow.new()
 	base.add_child(_window)
+	var current_scene := EditorInterface.get_edited_scene_root()
+	_previous_scene = weakref(current_scene) if current_scene != null else null
+	scene_changed.connect(_on_scene_changed)
 	_toolbar_btn = Button.new()
 	_toolbar_btn.text = "GdesignerTools"
 	_toolbar_btn.flat = true
@@ -48,6 +52,14 @@ func _exit_tree() -> void:
 
 func _process(_delta: float) -> void:
 	GDLevelSceneDrop.poll()
+
+
+func _on_scene_changed(scene_root: Node) -> void:
+	var previous: Node = _previous_scene.get_ref() as Node if _previous_scene != null else null
+	if previous != null:
+		_window.dock.level_editor.capture_scene(previous)
+	GDLevelSceneDrop.scene_changed()
+	_previous_scene = weakref(scene_root) if scene_root != null else null
 
 
 func _forward_3d_force_draw_over_viewport(overlay: Control) -> void:

@@ -57,7 +57,11 @@ func shown_graphs() -> Array[GDGuideGraphRes]:
 
 func _row_of(g: GDGuideGraphRes) -> Dictionary:
 	var tip := "示例，只在内存里；保存后成为项目引导图" if GDGuideSamples.is_sample(g) else (g.resource_path if not g.resource_path.is_empty() else "尚未保存")
-	return {"key": g, "text": g.display_name, "detail": "#%d" % g.graph_id, "color": GDEditorUi.hue_color(g.graph_id), "tooltip": tip}
+	var row := {"key": g, "text": g.display_name, "detail": "#%d" % g.graph_id, "color": GDEditorUi.hue_color(g.graph_id), "tooltip": tip}
+	if GDGuideEditing.conflicting_graph(g, g.graph_id) != null:
+		row["tone"] = &"danger"
+		row["detail"] = "#%d · ID 冲突" % g.graph_id
+	return row
 
 
 func _show_menu(key: Variant) -> void:
@@ -105,7 +109,13 @@ func delete_graph(g: GDGuideGraphRes) -> void:
 	else:
 		GDDialogs.confirm(self, "从磁盘删除", "删除 %s？这一步无法撤销。" % g.resource_path, "删除", func() -> void:
 			var path := g.resource_path
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+			if not GDDocument.new(g).owns_path(path):
+				said.emit("文件已被其它文档占用，无法删除：%s" % path)
+				return
+			var err := DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+			if err != OK:
+				said.emit("文件未删除：%s（%s）" % [path, error_string(err)])
+				return
 			if Engine.is_editor_hint():
 				EditorInterface.get_resource_filesystem().scan()
 			_forget(g)

@@ -101,7 +101,7 @@ static func swap_archetype(layout: GDLevelSceneRes, id: int, stable_id: int) -> 
 
 func _set_transform(id: int, pos: Vector3, euler: Vector3, scl: Vector3) -> void:
 	_layout.editor_replace_placement(id, _page.find_placement(id).with_transform(pos, euler, scl))
-	GDLevelSceneDrop.apply_transform(id, pos, euler, scl)
+	GDLevelSceneDrop.apply_transform(id, pos, euler, scl, _layout)
 
 
 ## 每个属性一个字段，显示实例上的值；和原型默认值不同时出现“恢复默认”。

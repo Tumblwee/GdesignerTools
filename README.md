@@ -31,6 +31,14 @@ Godot 4.7 的策划工具套件：关卡、演员、技能、新手引导，共�
 
 默认保存位置：`res://game_res/level`、`res://game_res/actors`、`res://game_res/skill`、`res://game_res/guide`。
 
+保存时检查文件归属。遇到同名文件，可以另存为、生成带后缀的新名字或取消。另存为覆盖已有文件会要求确认，已经被其它资源加载的文件需要保存到其它路径。引导图首次保存后保留文件路径，修改图 ID 会重新校验唯一性。
+
+关卡首次摆放前需要确认绑定一个已保存的场景。1.1.1 中每个 `Placements` 容器绑定一份布局。回拉位姿、同步、撤销和删除只作用于绑定场景内属于该布局的实例。旧场景里没有布局标记的实例只会在绑定场景中认领。保存全部会先同步视口位姿，再判断哪些文档需要写盘。
+
+技能运行时先检查费用、冷却和标签，通过后扣费。配置了消耗的单位需要注册属性集，未知的消耗属性会拒绝施放。技能服务和效果应用器在同一个事件总线上共享 `tag_store`，支持标签引用计数和层级匹配。游戏侧可以设置技能服务的 `tag_query(owner_id, tag)` 回调补充已有状态。持续效果到期时移除自己授予的标签，瞬时片段直接应用效果并保留施放者信息。
+
+时间轴播放用于核对片段时序。游戏侧通过 `SkillNodeFiredEvent` 接入命中、投射物、动画和表现。引导宿主负责实际 UI 定位、遮罩和点击转发，进度编码可接入项目自己的存档。
+
 ## 结构
 
 ```
@@ -65,7 +73,10 @@ Godot 不能把脚本是内部类的 Resource 写进 `.tres`。技能的片段�
 
 ```bash
 GODOT="D:/Godot/4.7.2/Godot_v4.7.2-stable_win64_console.exe"
-for t in test_gdesigner_tools test_level_page test_skill_page test_guide_page; do
+"$GODOT" --headless --path . --editor --import
+for t in test_gdesigner_tools test_level_page test_skill_page test_guide_page test_asset_safety test_level_safety test_skill_runtime_safety; do
   "$GODOT" --headless --path . -s "res://addons/gdesigner_tools/tests/$t.gd"
 done
 ```
+
+首次导入会建立全局类缓存。测试请在临时工程中执行，综合测试会在 `res://game_res/sample/_cli_tmp` 下生成并清理资源。安全回归测试使用各自的 `user://` 目录。

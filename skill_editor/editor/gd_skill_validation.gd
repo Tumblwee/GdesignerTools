@@ -21,7 +21,7 @@ class SkillValidationIssue extends RefCounted:
 
 
 class SkillAssetValidator extends RefCounted:
-	static func validate(so: GDSkillRes) -> Array[SkillValidationIssue]:
+	static func validate(so: GDSkillRes, known_skills: Array = []) -> Array[SkillValidationIssue]:
 		var issues: Array[SkillValidationIssue] = []
 		if so == null:
 			issues.append(SkillValidationIssue.new("skill-null", "未提供 SkillSO"))
@@ -35,6 +35,16 @@ class SkillAssetValidator extends RefCounted:
 			var file_name := so.resource_path.get_file().get_basename()
 			if so.unique_name != file_name:
 				issues.append(SkillValidationIssue.new("skill-id-mismatch", "%s != %s" % [so.unique_name, file_name]))
+		for other in known_skills:
+			if other is GDSkillRes and other != so and other.unique_name == so.unique_name:
+				issues.append(SkillValidationIssue.new("skill.identity.conflict", so.unique_name))
+				break
+		if so.cost == null or not is_finite(so.cost.amount) or so.cost.amount < 0.0:
+			issues.append(SkillValidationIssue.new("cost-invalid", "消耗数值必须是有限的非负数"))
+		elif so.cost.has_cost and not bool(GDSkillTypes.try_map_attribute_name(so.cost.attribute_name).get("ok", false)):
+			issues.append(SkillValidationIssue.new("cost-attribute-unknown", so.cost.attribute_name))
+		if so.cooldown == null or not is_finite(so.cooldown.duration_seconds) or so.cooldown.duration_seconds < 0.0:
+			issues.append(SkillValidationIssue.new("cooldown-invalid", "冷却时长必须是有限的非负数"))
 
 		if so.groups.is_empty():
 			issues.append(SkillValidationIssue.new("no-groups", so.unique_name))
@@ -81,7 +91,7 @@ class SkillAssetValidator extends RefCounted:
 
 	static func _add_null_tag_issues(issues: Array[SkillValidationIssue], tags: Array, field_name: String) -> void:
 		for i in range(tags.size()):
-			if tags[i] == null:
+			if not tags[i] is GDGameplayTagRes or tags[i].tag_name.strip_edges().is_empty():
 				issues.append(SkillValidationIssue.new("ref-missing", "%s[%d]" % [field_name, i]))
 
 

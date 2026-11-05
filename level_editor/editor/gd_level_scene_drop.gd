@@ -17,14 +17,18 @@ const GHOST_NAME := "[Archetype Drag Ghost]"
 const GROUND_NAME := "[SceneEditor Ground]"
 const PLACEMENTS_ROOT := "Placements"
 const META_ID := GDSceneEditorRuntime.PLACEMENT_ID_META
+const META_LAYOUT := GDSceneEditorRuntime.PLACEMENT_LAYOUT_META
 const RAY_LENGTH := 4000.0
 
 ## 当前进行中的拖拽；没有拖拽时为 null。
 static var session: DragSession = null
-static var _spawned: Dictionary = {} # int -> Node
+static var _spawned: Dictionary = {} # layout identity + instance_id -> Node
+static var _explicit_parents: Dictionary = {} # resource instance ID -> WeakRef, explicit headless hosts
+static var _layout_owners: Dictionary = {} # layout identity -> WeakRef
 static var _plugin: EditorPlugin = null
 static var _host: Node = null
 static var _status_cb: Callable = Callable()
+static var _binding_cb: Callable = Callable()
 static var _last_status: String = ""
 
 
@@ -87,8 +91,9 @@ static func bind_plugin(plugin: EditorPlugin, host: Node) -> void:
 	_host = host
 
 
-static func bind_status(callback: Callable) -> void:
+static func bind_status(callback: Callable, on_bound: Callable = Callable()) -> void:
 	_status_cb = callback
+	_binding_cb = on_bound
 
 
 static func is_payload(data: Variant) -> bool:
@@ -189,9 +194,125 @@ static func cancel() -> void:
 
 static func shutdown() -> void:
 	cancel()
+	_spawned.clear()
+	_explicit_parents.clear()
+	_layout_owners.clear()
 	_plugin = null
 	_host = null
 	_status_cb = Callable()
+	_binding_cb = Callable()
+
+
+static func scene_changed() -> void:
+	cancel()
+	_spawned.clear()
+
+
+## A saved scene and a layout must be explicitly bound before editor nodes are touched.
+static func is_bound_to_scene(layout: GDLevelSceneRes, scene_root: Node) -> bool:
+	if layout == null or scene_root == null or layout.scene_path.is_empty():
+		return false
+	if scene_root.scene_file_path.is_empty() or layout.scene_path != scene_root.scene_file_path:
+		return false
+	if not register_layout(layout):
+		return false
+	var parent := scene_root.get_node_or_null(PLACEMENTS_ROOT)
+	return parent == null or _owns_parent(layout, parent)
+
+
+static func bind_layout_to_scene(layout: GDLevelSceneRes, scene_root: Node) -> bool:
+	if layout == null or scene_root == null or scene_root.scene_file_path.is_empty():
+		return false
+	if not register_layout(layout):
+		return false
+	if not layout.scene_path.is_empty() and layout.scene_path != scene_root.scene_file_path:
+		return false
+	var parent := scene_root.get_node_or_null(PLACEMENTS_ROOT)
+	if parent != null and not _owns_parent(layout, parent):
+		return false
+	var binding_changed := layout.layout_id.is_empty() or layout.scene_path != scene_root.scene_file_path
+	var previous_identity := GDSceneEditorRuntime.layout_identity(layout)
+	ensure_layout_identity(layout)
+	layout.scene_path = scene_root.scene_file_path
+	if parent != null:
+		parent.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+		for child in parent.get_children():
+			if child.has_meta(META_ID) and str(child.get_meta(META_LAYOUT, "")) in ["", previous_identity]:
+				child.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+	if binding_changed and _binding_cb.is_valid():
+		_binding_cb.call(layout)
+	return true
+
+
+static func ensure_layout_identity(layout: GDLevelSceneRes) -> void:
+	if layout != null and layout.layout_id.is_empty():
+		layout.editor_ensure_layout_id()
+
+
+static func register_layout(layout: GDLevelSceneRes) -> bool:
+	if layout == null:
+		return false
+	for key: String in _layout_owners.keys():
+		var stale: WeakRef = _layout_owners[key]
+		if stale.get_ref() == null:
+			_layout_owners.erase(key)
+	var identity := GDSceneEditorRuntime.layout_identity(layout)
+	var ref: WeakRef = _layout_owners.get(identity)
+	var previous: GDLevelSceneRes = ref.get_ref() as GDLevelSceneRes if ref != null else null
+	if previous != null and previous != layout:
+		var same_asset := not layout.resource_path.is_empty() and not previous.resource_path.is_empty() \
+			and GDDocument.path_key(layout.resource_path) == GDDocument.path_key(previous.resource_path)
+		if not same_asset:
+			_set_status("关卡标识重复，已阻止场景同步。请为副本重设 layout_id 后重新绑定场景。", false)
+			return false
+	_layout_owners[identity] = weakref(layout)
+	return true
+
+
+static func request_scene_binding(layout: GDLevelSceneRes, on_bound: Callable) -> void:
+	var scene_root := edited_root()
+	if is_bound_to_scene(layout, scene_root):
+		if layout.layout_id.is_empty():
+			bind_layout_to_scene(layout, scene_root)
+		on_bound.call()
+		return
+	if layout == null or scene_root == null or scene_root.scene_file_path.is_empty():
+		_set_status("请先保存当前场景，再绑定关卡。", false)
+		return
+	if not layout.scene_path.is_empty():
+		_set_status("当前场景与关卡绑定不一致，请打开 %s。" % layout.scene_path, false)
+		return
+	if _host == null:
+		return
+	GDDialogs.confirm(_host, "绑定关卡场景", "将当前关卡绑定到 %s？" % scene_root.scene_file_path, "绑定并继续", func() -> void:
+		if not is_instance_valid(scene_root) or edited_root() != scene_root or not bind_layout_to_scene(layout, scene_root):
+			_set_status("场景已改变或已有其他关卡占用，绑定已取消。", false)
+			return
+		on_bound.call()
+	)
+
+
+static func _owns_parent(layout: GDLevelSceneRes, parent: Node) -> bool:
+	return register_layout(layout) and str(parent.get_meta(META_LAYOUT, "")) in ["", GDSceneEditorRuntime.layout_identity(layout)]
+
+
+static func _scene_parent(layout: GDLevelSceneRes, create: bool = false, scene_root: Node = null) -> Node:
+	if layout == null:
+		return null
+	if scene_root == null and not Engine.is_editor_hint():
+		var ref: WeakRef = _explicit_parents.get(layout.get_instance_id())
+		return ref.get_ref() as Node if ref != null else null
+	if scene_root == null:
+		scene_root = edited_root()
+	if not is_bound_to_scene(layout, scene_root):
+		return null
+	if layout.layout_id.is_empty():
+		bind_layout_to_scene(layout, scene_root)
+	return placement_parent(scene_root) if create else scene_root.get_node_or_null(PLACEMENTS_ROOT)
+
+
+static func _cache_key(layout: GDLevelSceneRes, inst_id: int) -> String:
+	return "%s:%d" % [GDSceneEditorRuntime.layout_identity(layout), inst_id]
 
 
 static func ensure_catcher(overlay: Control) -> void:
@@ -231,10 +352,11 @@ static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, 
 		return {"ok": false, "instance_id": 0, "error": "无关卡或原型。"}
 	var host := scene_parent
 	if host == null:
-		var scene_root := edited_root()
-		if scene_root == null:
-			return {"ok": false, "instance_id": 0, "error": "请先打开一个场景，再把原型拖进 3D 或 2D 视口。"}
-		host = placement_parent(scene_root)
+		host = _scene_parent(layout, true)
+	if host == null or not _owns_parent(layout, host):
+		return {"ok": false, "instance_id": 0, "error": "请先将关卡绑定到当前已保存的场景。"}
+	if Engine.is_editor_hint() and host != _scene_parent(layout, true):
+		return {"ok": false, "instance_id": 0, "error": "当前场景与关卡绑定不一致。"}
 	var added := layout.editor_try_add_placement(archetype.stable_id, point, Vector3.ZERO, Vector3.ONE, 1)
 	if not bool(added.get("ok", false)):
 		var err := str(added.get("error", "添加失败"))
@@ -245,7 +367,7 @@ static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, 
 	var found := layout.editor_try_get_placement(inst_id)
 	if bool(found.get("ok", false)):
 		_register_history(layout, found["inst"], true)
-	focus_instance(inst_id)
+	focus_instance(inst_id, layout)
 	var title := archetype.display_name if not archetype.display_name.is_empty() else str(archetype.stable_id)
 	var where := "场景" if node != null else "关卡数据（当前没有可写入的父节点）"
 	_set_status("已摆放 %s 到%s，位置 %s" % [title, where, _fmt_vec(point)], true)
@@ -265,15 +387,14 @@ static func delete_placement(layout: GDLevelSceneRes, inst_id: int) -> void:
 static func sync_layout_to_scene(layout: GDLevelSceneRes) -> Dictionary:
 	if layout == null:
 		return {"ok": false, "spawned": 0, "message": "无关卡。"}
-	var scene_root := edited_root()
-	if scene_root == null:
-		return {"ok": false, "spawned": 0, "message": "请先打开一个场景。"}
-	var host := placement_parent(scene_root)
+	var host := _scene_parent(layout, true)
+	if host == null:
+		return {"ok": false, "spawned": 0, "message": "请先将关卡绑定到当前已保存的场景。"}
 	var spawned := 0
 	for inst in layout.placements:
 		if inst == null:
 			continue
-		if find_placed_node(inst.instance_id) != null:
+		if find_placed_node(inst.instance_id, layout) != null:
 			continue
 		spawn_into(layout, inst.instance_id, host)
 		_register_history(layout, inst, true)
@@ -284,14 +405,14 @@ static func sync_layout_to_scene(layout: GDLevelSceneRes) -> Dictionary:
 
 
 ## 把场景里实例节点的位姿写回关卡。返回是否有改动。
-static func pull_transforms_from_scene(layout: GDLevelSceneRes) -> bool:
-	if layout == null:
+static func pull_transforms_from_scene(layout: GDLevelSceneRes, scene_root: Node = null) -> bool:
+	if layout == null or _scene_parent(layout, false, scene_root) == null:
 		return false
 	var changed := false
 	for inst in layout.placements.duplicate():
 		if inst == null:
 			continue
-		var node := find_placed_node(inst.instance_id)
+		var node := find_placed_node(inst.instance_id, layout, scene_root)
 		var pos: Vector3 = inst.position
 		var euler: Vector3 = inst.euler_angles
 		var scl: Vector3 = inst.scale
@@ -316,32 +437,29 @@ static func pull_transforms_from_scene(layout: GDLevelSceneRes) -> bool:
 ## 让场景与关卡数据一致：补生成缺失的实例、删掉关卡里已不存在的实例节点（Placements 下带 META_ID 的节点）、同步变换。
 ## scene_parent 为空时作用于当前编辑场景的 Placements；没有编辑场景则什么都不做。撤销 / 重做后调用。
 static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) -> void:
-	var host := scene_parent
-	if host == null:
-		var scene_root := edited_root()
-		if scene_root == null or layout == null:
-			return
-		host = scene_root.get_node_or_null(PLACEMENTS_ROOT)
-		if host == null:
-			if layout.placements.is_empty():
-				return
-			host = placement_parent(scene_root)
 	if layout == null:
 		return
+	var host := scene_parent
+	if host == null:
+		if not Engine.is_editor_hint():
+			return
+		host = _scene_parent(layout, not layout.placements.is_empty())
+	if host == null or not _owns_parent(layout, host):
+		return
+	host.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
 	var by_id := {}
 	for inst in layout.placements:
 		if inst != null:
 			by_id[inst.instance_id] = inst
 	var placed := {}
 	for child in host.get_children():
-		if not child.has_meta(META_ID):
+		if not child.has_meta(META_ID) or not _node_matches_layout(child, layout):
 			continue
 		var id := int(child.get_meta(META_ID))
 		if by_id.has(id) and not placed.has(id):
 			placed[id] = child
 		else:
-			if _spawned.get(id) == child:
-				_spawned.erase(id)
+			_spawned.erase(_cache_key(layout, id))
 			child.free()
 	for id in by_id:
 		var inst: GDPlacementData.PlacementInstance = by_id[id]
@@ -351,7 +469,7 @@ static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) 
 			marker = node.get_node_or_null("PlacementInstanceMarker") as GDSceneEditorRuntime.PlacementInstanceMarker
 		if marker != null and marker.archetype_stable_id != inst.archetype_stable_id:
 			# 原型换了（例如撤销了“替换原型”）：外观也要跟着换。
-			_spawned.erase(id)
+			_spawned.erase(_cache_key(layout, id))
 			node.free()
 			node = null
 		if node != null:
@@ -360,8 +478,8 @@ static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) 
 			spawn_into(layout, id, host)
 
 
-static func apply_transform(inst_id: int, pos: Vector3, euler: Vector3, scl: Vector3) -> void:
-	var node := find_placed_node(inst_id)
+static func apply_transform(inst_id: int, pos: Vector3, euler: Vector3, scl: Vector3, layout: GDLevelSceneRes = null) -> void:
+	var node := find_placed_node(inst_id, layout)
 	if node is Node3D:
 		var n3 := node as Node3D
 		n3.position = pos
@@ -375,23 +493,24 @@ static func apply_transform(inst_id: int, pos: Vector3, euler: Vector3, scl: Vec
 
 
 static func respawn(layout: GDLevelSceneRes, inst_id: int) -> void:
-	var existing := find_placed_node(inst_id)
+	if layout == null:
+		return
+	var existing := find_placed_node(inst_id, layout)
 	var parent: Node = existing.get_parent() if existing != null else null
 	if existing != null and is_instance_valid(existing):
-		_spawned.erase(inst_id)
+		_spawned.erase(_cache_key(layout, inst_id))
 		existing.free()
 	if parent == null:
-		var scene_root := edited_root()
-		if scene_root == null:
-			return
-		parent = placement_parent(scene_root)
+		parent = _scene_parent(layout, true)
+	if parent == null:
+		return
 	spawn_into(layout, inst_id, parent)
 
 
-static func focus_instance(inst_id: int) -> void:
+static func focus_instance(inst_id: int, layout: GDLevelSceneRes = null) -> void:
 	if not Engine.is_editor_hint():
 		return
-	var node := find_placed_node(inst_id)
+	var node := find_placed_node(inst_id, layout)
 	if node == null:
 		return
 	var selection := EditorInterface.get_selection()
@@ -401,12 +520,13 @@ static func focus_instance(inst_id: int) -> void:
 
 
 static func erase_placed(layout: GDLevelSceneRes, inst_id: int) -> void:
-	var node := find_placed_node(inst_id)
+	if layout == null:
+		return
+	var node := find_placed_node(inst_id, layout)
 	if node != null and is_instance_valid(node):
-		_spawned.erase(inst_id)
+		_spawned.erase(_cache_key(layout, inst_id))
 		node.free()
-	if layout != null:
-		layout.editor_remove_placement(inst_id)
+	layout.editor_remove_placement(inst_id)
 
 
 static func restore_placed(layout: GDLevelSceneRes, snapshot: GDPlacementData.PlacementInstance) -> void:
@@ -415,25 +535,45 @@ static func restore_placed(layout: GDLevelSceneRes, snapshot: GDPlacementData.Pl
 	if not bool(layout.editor_try_get_placement(snapshot.instance_id).get("ok", false)):
 		layout.placements.append(snapshot)
 		layout.emit_changed()
-	var parent := _parent_for_restore()
-	if parent != null and find_placed_node(snapshot.instance_id) == null:
+	var parent := _scene_parent(layout, true)
+	if parent != null and find_placed_node(snapshot.instance_id, layout) == null:
 		spawn_into(layout, snapshot.instance_id, parent)
 
 
-static func find_placed_node(inst_id: int) -> Node:
-	if _spawned.has(inst_id):
-		var cached: Variant = _spawned[inst_id]
-		if is_instance_valid(cached):
-			return cached
-		_spawned.erase(inst_id)
-	var scene_root := edited_root()
-	if scene_root != null:
-		return GDSceneEditorRuntime.find_placement_root(scene_root, inst_id)
+static func find_placed_node(inst_id: int, layout: GDLevelSceneRes = null, scene_root: Node = null) -> Node:
+	if layout == null:
+		# Retain the low-level headless API only when the ID is unambiguous.
+		if Engine.is_editor_hint():
+			return null
+		var matches: Array[Node] = []
+		for cached: Variant in _spawned.values():
+			if is_instance_valid(cached) and int(cached.get_meta(META_ID, 0)) == inst_id:
+				matches.append(cached)
+		return matches[0] if matches.size() == 1 else null
+	var parent := _scene_parent(layout, false, scene_root)
+	if parent == null or not _owns_parent(layout, parent):
+		return null
+	for child in parent.get_children():
+		if int(child.get_meta(META_ID, 0)) == inst_id and _node_matches_layout(child, layout, scene_root):
+			parent.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+			child.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+			return child
 	return null
+
+
+static func _node_matches_layout(node: Node, layout: GDLevelSceneRes, scene_root: Node = null) -> bool:
+	var identity := str(node.get_meta(META_LAYOUT, ""))
+	if scene_root == null:
+		scene_root = edited_root()
+	return identity == GDSceneEditorRuntime.layout_identity(layout) or (identity.is_empty() and is_bound_to_scene(layout, scene_root))
 
 
 static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> Node:
 	if layout == null or parent == null or inst_id <= 0:
+		return null
+	if not _owns_parent(layout, parent):
+		return null
+	if Engine.is_editor_hint() and parent != _scene_parent(layout, true):
 		return null
 	var found := layout.editor_try_get_placement(inst_id)
 	if not bool(found.get("ok", false)):
@@ -443,6 +583,8 @@ static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> N
 	var node := _build_visual(arch, parent is Node2D)
 	node.name = _safe_name(GDPlacementData.PlacementInstanceIdRangeLogic.resolve_display_name(inst, arch), inst_id)
 	node.set_meta(META_ID, inst_id)
+	node.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+	parent.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
 	_apply_pose(node, inst.position, inst.euler_angles, inst.scale)
 	parent.add_child(node)
 	var scene_root := _owner_root(parent)
@@ -457,10 +599,13 @@ static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> N
 		marker.owner = scene_root
 	if not inst.attribute_overrides.is_empty():
 		GDEntityAtomSystem.AtomVarTagRegistry.apply_overrides_to_node(node, inst.attribute_overrides)
-	_spawned[inst_id] = node
+	var key := _cache_key(layout, inst_id)
+	_spawned[key] = node
+	if not Engine.is_editor_hint():
+		_explicit_parents[layout.get_instance_id()] = weakref(parent)
 	node.tree_exiting.connect(func() -> void:
-		if _spawned.get(inst_id) == node:
-			_spawned.erase(inst_id)
+		if _spawned.get(key) == node:
+			_spawned.erase(key)
 	)
 	return node
 
@@ -498,9 +643,11 @@ static func notify_ui(text: String) -> void:
 static func _place_active() -> void:
 	var placing := session
 	cancel()
-	var result := place_archetype(placing.layout, placing.archetype, placing.snap_point)
-	if not bool(result.get("ok", false)):
-		_set_status(str(result.get("error", "落点失败")), false)
+	request_scene_binding(placing.layout, func() -> void:
+		var result := place_archetype(placing.layout, placing.archetype, placing.snap_point)
+		if not bool(result.get("ok", false)):
+			_set_status(str(result.get("error", "落点失败")), false)
+	)
 
 
 static func _register_history(layout: GDLevelSceneRes, snapshot: GDPlacementData.PlacementInstance, undo_erases: bool) -> void:
@@ -509,7 +656,7 @@ static func _register_history(layout: GDLevelSceneRes, snapshot: GDPlacementData
 	if not Engine.is_editor_hint():
 		return
 	var undo := _plugin.get_undo_redo()
-	undo.create_action("摆放原型")
+	undo.create_action("摆放原型", UndoRedo.MERGE_DISABLE, edited_root())
 	if undo_erases:
 		undo.add_undo_method(_host, "erase_placed", layout, snapshot.instance_id)
 		undo.add_do_method(_host, "restore_placed", layout, snapshot)
@@ -736,13 +883,6 @@ static func _owner_root(parent: Node) -> Node:
 	if parent != null and parent.owner != null:
 		return parent.owner
 	return parent
-
-
-static func _parent_for_restore() -> Node:
-	var scene_root := edited_root()
-	if scene_root == null:
-		return null
-	return placement_parent(scene_root)
 
 
 static func _safe_name(text: String, inst_id: int) -> String:

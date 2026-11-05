@@ -11,6 +11,8 @@ const ISSUE_TEXT := {
 	"no-groups": "没有轨道组", "group-missing": "组缺失", "group-name-missing": "组名为空",
 	"group-name-duplicate": "组名重复", "clip-missing": "片段缺失", "duration-too-short": "总时长短于片段",
 	"ref-missing": "引用缺失",
+	"skill.identity.conflict": "技能身份冲突",
+	"cost-invalid": "消耗数值不合法", "cost-attribute-unknown": "消耗属性无法映射", "cooldown-invalid": "冷却时长不合法",
 }
 
 ## 技能存放在 <skills_root>/skill。测试时可以指向 user://。
@@ -21,6 +23,7 @@ var _selection := PackedInt32Array()
 var _playhead: float = 0.0
 var _playing: bool = false
 var _previewed: bool = false
+var _library_loaded: bool = false
 
 var _list: GDLibraryList = null
 var _view: GDSkillTimelineView = null
@@ -113,7 +116,7 @@ func _build() -> void:
 
 	_inspector = GDSkillInspector.new(self)
 	set_panes(GDEditorUi.pane(_list), GDEditorUi.pane(center, 0), GDEditorUi.pane(GDEditorUi.scroll_of(_inspector.form)))
-	refresh_library()
+	_refresh()
 
 
 func _ready() -> void:
@@ -121,7 +124,7 @@ func _ready() -> void:
 
 
 func activate() -> void:
-	if skill == null:
+	if not _library_loaded:
 		refresh_library()
 
 
@@ -132,6 +135,7 @@ func cli_context(command: String) -> PackedStringArray:
 
 
 func refresh_library() -> void:
+	_library_loaded = true
 	_skills = GDSkillForge.get_all_known_skills(skills_root)
 	_skills.sort_custom(func(a: GDSkillRes, b: GDSkillRes) -> bool: return a.skill_id < b.skill_id)
 	if skill == null and not _skills.is_empty():
@@ -147,6 +151,8 @@ func select_skill(target: GDSkillRes) -> void:
 	_previewed = false
 	_selection = PackedInt32Array()
 	open_document(target)
+	if doc != null:
+		doc.on_restored = GDSkillForge.reindex_in_memory_skills
 	_view.skill = target
 	_view.fit()
 	_refresh()
@@ -168,16 +174,74 @@ func _suggest_save_path(resource: Resource) -> String:
 
 ## 存到 unique_name 对应的文件；改过名就把旧文件移进回收站。
 func _save(target: GDDocument) -> void:
+	prepare_save(target)
 	var saved := target.resource as GDSkillRes
 	var old_path := saved.resource_path
 	var path := _path_for(saved, saved.unique_name)
+	if not identity_error(saved, saved.skill_name, str(saved.skill_id)).is_empty():
+		_report_save(target, ERR_ALREADY_EXISTS, path)
+		return
+	var owned_old_path := target.owns_path(old_path)
+	var old_hash := FileAccess.get_sha256(old_path) if owned_old_path and FileAccess.file_exists(old_path) else ""
 	saved.resource_name = saved.unique_name
 	var err := target.save(path)
+	var cleanup_error := OK
 	if err == OK:
 		GDSkillForge.register_in_memory_skill(saved)
-		if not old_path.is_empty() and old_path != path:
-			_trash(old_path)
-	_report_save(target, err)
+		var cached_old := ResourceLoader.get_cached_ref(old_path) if ResourceLoader.has_cached(old_path) else null
+		if owned_old_path and GDDocument.path_key(old_path) != GDDocument.path_key(path) \
+			and not old_hash.is_empty() and FileAccess.get_sha256(old_path) == old_hash \
+			and (cached_old == null or cached_old == saved):
+			cleanup_error = _trash(old_path)
+	_report_save(target, err, path)
+	if cleanup_error != OK:
+		say("新文件已保存，旧文件保留：%s（%s）" % [old_path, error_string(cleanup_error)], &"warn")
+
+
+func _save_as(target: GDDocument, path: String, allow_overwrite: bool = false) -> Error:
+	prepare_save(target)
+	var saved := target.resource as GDSkillRes
+	var basename := path.get_file().get_basename()
+	var identity := GDSkillTypes.SkillIdentity.try_parse_asset_name(basename)
+	if not bool(identity.get("ok", false)) or basename != GDSkillTypes.SkillIdentity.to_asset_name(str(identity["name"]), int(identity["id"])):
+		return ERR_FILE_BAD_PATH
+	for other in _skills:
+		if other != saved and other.unique_name == basename:
+			return ERR_ALREADY_EXISTS
+	var err := target.can_save(path, allow_overwrite)
+	if err != OK:
+		return err
+	var old_name := saved.skill_name
+	var old_id := saved.skill_id
+	var old_resource_name := saved.resource_name
+	saved.skill_name = str(identity["name"])
+	saved.skill_id = int(identity["id"])
+	saved.resource_name = basename
+	err = target.save(path, allow_overwrite)
+	if err != OK:
+		saved.skill_name = old_name
+		saved.skill_id = old_id
+		saved.resource_name = old_resource_name
+		return err
+	if old_name != saved.skill_name or old_id != saved.skill_id:
+		target.commit("另存技能")
+		target.mark_saved()
+	GDSkillForge.register_in_memory_skill(saved)
+	return err
+
+
+func _alternative_save_path(target: GDDocument, attempted_path: String) -> String:
+	var saved := target.resource as GDSkillRes
+	var suffix := 2
+	while true:
+		var name := "%s_%d" % [saved.skill_name, suffix]
+		var identity := GDSkillTypes.SkillIdentity.to_asset_name(name, saved.skill_id)
+		var path := attempted_path.get_base_dir().path_join(identity + ".tres")
+		var taken := _skills.any(func(other: GDSkillRes) -> bool: return other != saved and other.unique_name == identity)
+		if not taken and target.can_save(path) == OK:
+			return path
+		suffix += 1
+	return ""
 
 
 func _path_for(target: GDSkillRes, unique_name: String) -> String:
@@ -189,6 +253,8 @@ func _path_for(target: GDSkillRes, unique_name: String) -> String:
 # ── 刷新 ──
 
 func _refresh() -> void:
+	if skill != null:
+		GDSkillForge.register_in_memory_skill(skill)
 	_selection = _resolved(_selection)
 	_refresh_list()
 	_refresh_center()
@@ -233,7 +299,10 @@ func _refresh_issues() -> void:
 	if skill == null:
 		_issues_tree.visible = false
 		return
-	var issues := GDSkillValidation.SkillAssetValidator.validate(skill)
+	var issues := GDSkillValidation.SkillAssetValidator.validate(skill, _skills)
+	var conflict := identity_error(skill, skill.skill_name, str(skill.skill_id))
+	if not conflict.is_empty() and not issues.any(func(issue: GDSkillValidation.SkillValidationIssue) -> bool: return issue.code == "skill.identity.conflict"):
+		issues.append(GDSkillValidation.SkillValidationIssue.new("skill.identity.conflict", conflict))
 	var root := _issues_tree.create_item()
 	for issue in issues:
 		var item := root.create_child()
@@ -319,13 +388,12 @@ func identity_error(s: GDSkillRes, skill_name: String, id_text: String) -> Strin
 	if not id_text.is_valid_int() or id_text.to_int() < 0:
 		return "ID 必须是非负整数"
 	var unique_name := GDSkillTypes.SkillIdentity.to_asset_name(skill_name, id_text.to_int())
-	if s != null and unique_name == s.unique_name:
-		return ""
 	for other in _skills:
 		if other != s and other.unique_name == unique_name:
 			return "已有技能 %s" % unique_name
 	var path := _path_for(s, unique_name)
-	return "文件已存在：%s" % path if FileAccess.file_exists(path) else ""
+	var own_path := s != null and not s.resource_path.is_empty() and GDDocument.path_key(path) == GDDocument.path_key(s.resource_path)
+	return "文件已存在：%s" % path if not own_path and FileAccess.file_exists(path) else ""
 
 
 # ── 结构编辑 ──
@@ -527,6 +595,10 @@ func _new_skill() -> void:
 
 ## 新技能：1 秒、一个 Cast 组、一条轨道，立即存盘并选中。
 func create_skill(skill_name: String, skill_id: int, display: String) -> GDSkillRes:
+	var error := identity_error(null, skill_name, str(skill_id))
+	if not error.is_empty():
+		say(error, &"danger")
+		return null
 	var created := GDSkillRes.new()
 	created.configure_header(skill_name, skill_id, display if not display.is_empty() else skill_name, "")
 	created.set_duration(1000)
@@ -569,6 +641,10 @@ func _rename_skill(target: GDSkillRes) -> void:
 
 ## 改名会得到新的 unique_name，文件跟着移动；撤销后再保存会移回去。
 func rename_skill(target: GDSkillRes, skill_name: String, skill_id: int, display: String) -> void:
+	var error := identity_error(target, skill_name, str(skill_id))
+	if not error.is_empty():
+		say(error, &"danger")
+		return
 	if target != skill:
 		select_skill(target)
 	target.skill_name = skill_name
@@ -586,7 +662,16 @@ func delete_skill_from_disk(target: GDSkillRes) -> void:
 	var title := doc_title(target)
 	var index := _skills.find(target)
 	if not target.resource_path.is_empty():
-		_trash(target.resource_path)
+		var target_doc: GDDocument = _docs.get(target)
+		if target_doc == null:
+			target_doc = GDDocument.new(target)
+		if not target_doc.owns_path(target.resource_path):
+			say("文件已被其它文档占用，无法删除：%s" % target.resource_path, &"danger")
+			return
+		var err := _trash(target.resource_path)
+		if err != OK:
+			say("文件未删除：%s（%s）" % [target.resource_path, error_string(err)], &"danger")
+			return
 		target.resource_path = ""
 	GDSkillForge.unregister_in_memory_skill(target)
 	_skills.erase(target)
@@ -598,12 +683,12 @@ func delete_skill_from_disk(target: GDSkillRes) -> void:
 	say("已将「%s」移到回收站" % title)
 
 
-func _trash(path: String) -> void:
+func _trash(path: String) -> Error:
 	var absolute := ProjectSettings.globalize_path(path)
-	if OS.move_to_trash(absolute) != OK:
-		DirAccess.remove_absolute(absolute)
-	if Engine.is_editor_hint():
+	var err := OS.move_to_trash(absolute)
+	if err == OK and Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().update_file(path)
+	return err
 
 
 func _next_id() -> int:

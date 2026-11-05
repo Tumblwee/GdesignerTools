@@ -16,7 +16,9 @@ static var _in_memory_graphs: Dictionary = {} # int (graph_id) -> GDGuideGraphRe
 
 static func register_in_memory_graph(g: GDGuideGraphRes) -> void:
 	if g != null:
-		_in_memory_graphs[g.graph_id] = g
+		unregister_graph(g)
+		var key := g.graph_id if not _in_memory_graphs.has(g.graph_id) else -g.get_instance_id()
+		_in_memory_graphs[key] = g
 
 static func find_graph(graph_id: int) -> GDGuideGraphRes:
 	return _in_memory_graphs.get(graph_id)
@@ -29,26 +31,42 @@ static func find_all_graphs() -> Array[GDGuideGraphRes]:
 	return result
 
 ## 示例图不参与编号，免得新图从 9003 开始。
-static func suggest_graph_id() -> int:
+static func suggest_graph_id(root: String = "res://game_res/guide") -> int:
 	var mx := 0
 	for g in find_all_graphs():
 		if not GDGuideSamples.is_sample(g):
 			mx = maxi(mx, g.graph_id)
-	return mx + 1
+	var next_id := mx + 1
+	while FileAccess.file_exists(root.path_join("Guide_%d.tres" % next_id)) or FileAccess.file_exists(root.path_join("Guide_%d.res" % next_id)):
+		next_id += 1
+	return next_id
+
+static func suggest_save_path(g: GDGuideGraphRes, root: String = "res://game_res/guide") -> String:
+	var stem := "Guide_%d" % g.graph_id
+	var path := root.path_join(stem + ".tres")
+	var suffix := 2
+	while FileAccess.file_exists(path):
+		path = root.path_join("%s_%d.tres" % [stem, suffix])
+		suffix += 1
+	return path
 
 static func unregister_graph(g: GDGuideGraphRes) -> void:
 	for key in _in_memory_graphs.keys():
 		if _in_memory_graphs[key] == g:
 			_in_memory_graphs.erase(key)
 
-## 图 ID 改过（或撤销了改动）之后，让注册表的键重新对上。已被占用的 ID 不会挤掉别的图。
+## 冲突图保留在列表中，使用负的实例 ID 作临时键，修正 ID 后恢复正常键。
 static func reindex() -> void:
-	for key in _in_memory_graphs.keys():
-		var g: GDGuideGraphRes = _in_memory_graphs[key]
-		if g != null and g.graph_id != key:
-			_in_memory_graphs.erase(key)
-			if not _in_memory_graphs.has(g.graph_id):
-				_in_memory_graphs[g.graph_id] = g
+	var graphs := find_all_graphs()
+	_in_memory_graphs.clear()
+	for g in graphs:
+		register_in_memory_graph(g)
+
+static func conflicting_graph(g: GDGuideGraphRes, graph_id: int) -> GDGuideGraphRes:
+	for other in find_all_graphs():
+		if other != g and other.graph_id == graph_id:
+			return other
+	return null
 
 ## 把磁盘上保存过的引导图载入注册表，编辑器重启后也能找到。返回新登记的数量。
 static func scan_graphs(root: String = "res://game_res/guide") -> int:
@@ -65,7 +83,9 @@ static func scan_graphs(root: String = "res://game_res/guide") -> int:
 		var existing := find_graph(g.graph_id)
 		if existing == g:
 			continue
-		if existing == null or GDGuideSamples.is_sample(existing):
+		if GDGuideSamples.is_sample(existing):
+			unregister_graph(existing)
+		if not _in_memory_graphs.values().has(g):
 			GDGuideSchemaMigrator.migrate(g)
 			register_in_memory_graph(g)
 			added += 1

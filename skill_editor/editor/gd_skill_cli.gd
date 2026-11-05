@@ -133,12 +133,13 @@ static func _cmd_effect_create(ctx: GDCliRoot.CliContext) -> String:
 	if ctx.has_flag("dry-run"):
 		payload["dryRun"] = true
 		return ctx.ok(payload)
-	GDCliRoot.AtomCreator.ensure_dir(eff_path.get_base_dir())
 	var eff := GDGameplayEffectRes.new()
 	eff.duration = ctx.get_option("duration", "0").to_float()
 	eff.period = ctx.get_option("period", "0").to_float()
 	eff.modifiers = mods
-	ResourceSaver.save(eff, eff_path)
+	var err := GDDocument.new(eff).save(eff_path)
+	if err != OK:
+		return ctx.fail("save-failed", "保存失败：%s（%s）" % [eff_path, error_string(err)])
 	return ctx.ok(payload)
 
 static func _cmd_preview_setup(ctx: GDCliRoot.CliContext) -> String:
