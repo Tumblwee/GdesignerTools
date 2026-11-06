@@ -2,7 +2,7 @@
 class_name GDKeywordCatalogDialog
 extends AcceptDialog
 
-## 编辑“类型”目录：改名、新增、停用。关卡和演员共用。
+## 编辑“类型”目录：改名、颜色、新增、停用。关卡和演员共用。
 ## 删除是软删除：稳定 ID 不复用，重新添加同名类型会复活原 ID。
 
 var _catalog: Resource = null
@@ -35,6 +35,9 @@ func _build() -> void:
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", GDEditorUi.GAP)
 	add_child(root)
+	var hint := Label.new()
+	hint.text = "点击色块修改类型颜色，同类型的原型和实例共用。"
+	root.add_child(hint)
 
 	_rows = VBoxContainer.new()
 	_rows.add_theme_constant_override("separation", 2)
@@ -79,6 +82,23 @@ func _refresh() -> void:
 
 func _make_row(entry: Resource) -> Control:
 	var row := HBoxContainer.new()
+	row.set_meta(&"type_entry", entry)
+	var color := ColorPickerButton.new()
+	color.custom_minimum_size = Vector2(44, 28)
+	color.edit_alpha = false
+	color.color = entry.get_display_color()
+	color.tooltip_text = "类型颜色 · #%s" % color.color.to_html(false)
+	color.get_picker().deferred_mode = true
+	color.color_changed.connect(func(value: Color) -> void:
+		var opaque := Color(value, 1.0)
+		if opaque.is_equal_approx(entry.get_display_color()):
+			return
+		entry.display_color = opaque
+		_catalog.emit_changed()
+		_notify("修改类型颜色")
+		refresh_colors()
+	)
+	row.add_child(color)
 	var edit := LineEdit.new()
 	edit.text = entry.display_name if not entry.display_name.is_empty() else entry.entry_name
 	edit.tooltip_text = "%s · ID %d" % [entry.entry_name, entry.stable_id]
@@ -101,21 +121,48 @@ func _make_row(entry: Resource) -> Control:
 	return row
 
 
+## 撤销、重做只同步色块，不重建正在使用的取色器。
+func refresh_colors() -> void:
+	for row in _rows.get_children():
+		var entry: Resource = row.get_meta(&"type_entry", null)
+		if entry != null:
+			var color := row.get_child(0) as ColorPickerButton
+			color.color = entry.get_display_color()
+			color.tooltip_text = "类型颜色 · #%s" % color.color.to_html(false)
+
+
 func _add_entry() -> void:
 	var display := _new_edit.text.strip_edges()
 	if display.is_empty():
 		return
-	_catalog.add_entry(unique_internal_name(_catalog, display), display, "")
+	# 相同显示名不重复创建；停用后再次添加则恢复同一个稳定 ID。
+	for entry in _catalog.entries:
+		if entry != null and entry.display_name == display:
+			if not entry.deprecated:
+				_status.text = "已存在这个类型"
+				return
+			_catalog.add_entry(entry.entry_name, display, entry.description)
+			_new_edit.text = ""
+			_notify("恢复类型")
+			_refresh()
+			return
+	var added = _catalog.add_entry(unique_internal_name(_catalog, display), display, "")
+	if added == null:
+		_status.text = "添加失败：类型名称无效"
+		return
 	_new_edit.text = ""
 	_notify("添加类型")
 	_refresh()
 
 
 func _generate() -> void:
+	# 生成是可选操作。给首次生成提供有效路径，避免把配置缺失报成编译错误。
 	if _catalog.enum_type_name.is_empty():
 		_catalog.enum_type_name = "GeneratedArchetypeType"
 	if _catalog.enum_namespace.is_empty():
 		_catalog.enum_namespace = "Project.Keywords"
+	if _catalog.generated_file_path.strip_edges().is_empty():
+		_catalog.editor_set_generated_output_folder("res://game_res/generated/keywords")
 	if _catalog.regenerate():
 		_notify("生成枚举")
 		_refresh()
@@ -142,7 +189,7 @@ static func unique_internal_name(catalog: Resource, display: String) -> String:
 	base = base.left(1).to_upper() + base.substr(1)
 	var candidate := base
 	var suffix := 1
-	while catalog.find_any_by_name(candidate) != null:
+	while catalog.find_any_by_name(candidate) != null or not GDKeywordCatalogSystem.KeywordIdentifierUtil.is_valid_identifier(candidate):
 		suffix += 1
 		candidate = "%s%d" % [base, suffix]
 	return candidate

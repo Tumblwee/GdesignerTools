@@ -13,6 +13,7 @@ extends RefCounted
 ## 运行时 load_session 若发现同 instance_id 的节点就直接采纳，不会再生成一份。
 
 const DRAG_TYPE := "gdesigner_archetype"
+const ACTOR_DRAG_TYPE := "gdesigner_actor_spawn"
 const GHOST_NAME := "[Archetype Drag Ghost]"
 const GROUND_NAME := "[SceneEditor Ground]"
 const PLACEMENTS_ROOT := "Placements"
@@ -35,6 +36,8 @@ static var _last_status: String = ""
 ## 一次原型拖拽的状态：拖的是谁、落点吸附结果、是否已提交，以及视口里的预览幽灵节点。
 class DragSession extends RefCounted:
 	var archetype: GDArchetypeRes = null
+	var actor_reference: GDActorReferenceRes = null
+	var actor_dimension_errors: Array[String] = []
 	var layout: GDLevelSceneRes = null
 	var title: String = ""
 	var hovering: bool = false
@@ -97,7 +100,11 @@ static func bind_status(callback: Callable, on_bound: Callable = Callable()) -> 
 
 
 static func is_payload(data: Variant) -> bool:
-	return data is Dictionary and str(data.get("type", "")) == DRAG_TYPE
+	return data is Dictionary and str(data.get("type", "")) in [DRAG_TYPE, ACTOR_DRAG_TYPE]
+
+
+static func is_actor_payload(data: Variant) -> bool:
+	return data is Dictionary and data.get("type", "") == ACTOR_DRAG_TYPE and data.get("actor_reference") is GDActorReferenceRes
 
 
 static func is_active() -> bool:
@@ -156,6 +163,23 @@ static func begin(archetype: GDArchetypeRes, layout: GDLevelSceneRes) -> Diction
 	session = DragSession.new(archetype, layout)
 	_set_status("拖拽中：%s。移到 3D 或 2D 视口后松开。" % session.title, false)
 	return {"type": DRAG_TYPE, "stable_id": archetype.stable_id, "display_name": session.title}
+
+
+static func begin_actor(actor: GDArchetypeRes, library: GDActorLibraryRes, layout: GDLevelSceneRes) -> Dictionary:
+	if layout == null or actor == null:
+		_set_status("请先在关卡页打开需要摆放演员的关卡。", false)
+		return {}
+	var payload := begin(GDActorSpawnRuntime.archetype(), layout)
+	if payload.is_empty():
+		return payload
+	session.actor_reference = GDActorReferenceRes.from_actor(actor, library)
+	session.actor_dimension_errors = [GDActorSpawnRuntime.validate_dimension(actor, false), GDActorSpawnRuntime.validate_dimension(actor, true)]
+	session.title = "%s · 演员生成点" % actor.display_name
+	payload.type = ACTOR_DRAG_TYPE
+	payload.actor_reference = session.actor_reference
+	payload.display_name = session.title
+	_set_status("拖拽中：%s。移到对应的 3D 或 2D 场景视口后松开。" % session.title, false)
+	return payload
 
 
 static func poll() -> void:
@@ -342,7 +366,7 @@ static func suggest_drop_point() -> Vector3:
 	return Vector3.ZERO
 
 
-static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, point: Vector3, scene_parent: Node = null) -> Dictionary:
+static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, point: Vector3, scene_parent: Node = null, actor_reference: GDActorReferenceRes = null) -> Dictionary:
 	if layout == null or archetype == null:
 		return {"ok": false, "instance_id": 0, "error": "无关卡或原型。"}
 	var host := scene_parent
@@ -352,12 +376,22 @@ static func place_archetype(layout: GDLevelSceneRes, archetype: GDArchetypeRes, 
 		return {"ok": false, "instance_id": 0, "error": "请先打开当前关卡的编辑场景。"}
 	if Engine.is_editor_hint() and host != _scene_parent(layout, true):
 		return {"ok": false, "instance_id": 0, "error": "当前场景与关卡绑定不一致。"}
+	if actor_reference != null:
+		var error := GDActorSpawnRuntime.validate_dimension(actor_reference.resolve(), host is Node2D)
+		if not error.is_empty():
+			return {"ok": false, "instance_id": 0, "error": error}
+		if layout.find_archetype_by_stable_id(GDActorSpawnRuntime.ARCHETYPE_ID) != GDActorSpawnRuntime.archetype():
+			return {"ok": false, "instance_id": 0, "error": "原型 ID 1 已被占用，无法创建内置演员生成点。"}
 	var added := layout.editor_try_add_placement(archetype.stable_id, point, Vector3.ZERO, Vector3.ONE, 1)
 	if not bool(added.get("ok", false)):
 		var err := str(added.get("error", "添加失败"))
 		_set_status(err, false)
 		return {"ok": false, "instance_id": 0, "error": err}
 	var inst_id := int(added.get("instance_id", 0))
+	if actor_reference != null:
+		var spawn_inst: GDPlacementData.PlacementInstance = layout.editor_try_get_placement(inst_id)["inst"]
+		spawn_inst.actor_reference = actor_reference
+		spawn_inst.display_name = "%s · 生成点 #%d" % [actor_reference.resolve().display_name, inst_id]
 	var node := spawn_into(layout, inst_id, host)
 	var found := layout.editor_try_get_placement(inst_id)
 	if bool(found.get("ok", false)):
@@ -428,6 +462,13 @@ static func pull_transforms_from_scene(layout: GDLevelSceneRes, scene_root: Node
 		if not (pos.is_equal_approx(inst.position) and euler.is_equal_approx(inst.euler_angles) and scl.is_equal_approx(inst.scale)):
 			layout.editor_replace_placement(inst.instance_id, inst.with_transform(pos, euler, scl))
 			changed = true
+		if GDActorSpawnRuntime.is_point(node) and GDActorSpawnRuntime.is_spawn(inst):
+			if not GDActorReferenceRes.same(node.actor_reference, inst.actor_reference) or node.initial_level != inst.initial_level or node.spawn_on_ready != inst.actor_spawn_on_ready:
+				var updated: GDPlacementData.PlacementInstance = layout.editor_try_get_placement(inst.instance_id)["inst"]
+				updated.actor_reference = node.actor_reference.duplicate() if node.actor_reference != null else null
+				updated.initial_level = node.initial_level
+				updated.actor_spawn_on_ready = node.spawn_on_ready
+				changed = true
 	return changed
 
 
@@ -470,6 +511,10 @@ static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) 
 			marker = node.get_node_or_null("PlacementInstanceMarker") as GDSceneEditorRuntime.PlacementInstanceMarker
 		if marker != null and marker.archetype_stable_id != inst.archetype_stable_id:
 			# 原型换了（例如撤销了“替换原型”）：外观也要跟着换。
+			_spawned.erase(_cache_key(layout, id))
+			node.free()
+			node = null
+		if node != null and GDActorSpawnRuntime.is_point(node) and (not GDActorReferenceRes.same(node.actor_reference, inst.actor_reference) or node.initial_level != inst.initial_level or node.spawn_on_ready != inst.actor_spawn_on_ready):
 			_spawned.erase(_cache_key(layout, id))
 			node.free()
 			node = null
@@ -585,7 +630,7 @@ static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> N
 		return null
 	var inst: GDPlacementData.PlacementInstance = found["inst"]
 	var arch := layout.find_archetype_by_stable_id(inst.archetype_stable_id)
-	var node := _build_visual(arch, parent is Node2D)
+	var node := GDActorSpawnRuntime.create_point(inst, parent is Node2D, true) if GDActorSpawnRuntime.is_spawn(inst) else _build_visual(arch, parent is Node2D)
 	node.name = _safe_name(GDPlacementData.PlacementInstanceIdRangeLogic.resolve_display_name(inst, arch), inst_id)
 	node.set_meta(META_ID, inst_id)
 	node.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
@@ -649,7 +694,7 @@ static func _place_active() -> void:
 	var placing := session
 	cancel()
 	request_scene_binding(placing.layout, func() -> void:
-		var result := place_archetype(placing.layout, placing.archetype, placing.snap_point)
+		var result := place_archetype(placing.layout, placing.archetype, placing.snap_point, null, placing.actor_reference)
 		if not bool(result.get("ok", false)):
 			_set_status(str(result.get("error", "落点失败")), false)
 	)
@@ -699,6 +744,13 @@ static func _store_hover(hit: Dictionary, use_2d: bool) -> void:
 	session.snap_valid = bool(hit.get("ok", false))
 	session.snap_point = hit.get("point", Vector3.ZERO)
 	session.ground = bool(hit.get("ground", false))
+	if session.actor_reference != null:
+		var error := session.actor_dimension_errors[1 if use_2d else 0]
+		if not error.is_empty() or use_2d != (edited_root() is Node2D):
+			session.snap_valid = false
+			_clear_ghost()
+			_set_status(error if not error.is_empty() else "请拖到与当前场景维度一致的视口。", false)
+			return
 	if session.snap_valid:
 		var ground_note := "逻辑地面" if session.ground else ("2D 平面" if use_2d else "Y=0 平面")
 		_set_status("松开把 %s 放到%s %s" % [session.title, ground_note, _fmt_vec(session.snap_point)], false)
@@ -789,10 +841,14 @@ static func _update_ghost(point: Vector3, use_2d: bool, visible: bool) -> void:
 	var want_2d := use_2d and root is Node2D
 	if ghost == null or not is_instance_valid(ghost) or (want_2d and not (ghost is Node2D)) or (not want_2d and ghost is Node2D):
 		_clear_ghost()
-		ghost = _build_visual(session.archetype, want_2d)
+		ghost = _build_visual(session.actor_reference.resolve() if session.actor_reference != null else session.archetype, want_2d)
 		ghost.name = GHOST_NAME
 		_strip_ghost(ghost)
+		if session.actor_reference != null:
+			GDPreviewScene.prepare(ghost)
 		root.add_child(ghost)
+		if session.actor_reference != null:
+			GDPreviewScene.freeze(ghost)
 		ghost.owner = null
 		session.ghost = ghost
 	_apply_pose(ghost, point, Vector3.ZERO, Vector3.ONE)
@@ -878,6 +934,8 @@ static func _apply_pose(node: Node, pos: Vector3, euler: Vector3, scl: Vector3) 
 static func _own(node: Node, scene_root: Node) -> void:
 	if node != scene_root:
 		node.owner = scene_root
+	if GDActorSpawnRuntime.is_point(node):
+		return # 只保存生成点和演员引用；预览子节点由工具脚本重建。
 	for child in node.get_children():
 		_own(child, scene_root)
 

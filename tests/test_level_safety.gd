@@ -8,6 +8,7 @@ var _failed := 0
 
 
 func _initialize() -> void:
+	GDLevelLibraries.storage_root = "user://test_level_safety_libraries_%d" % Time.get_ticks_usec()
 	_run.call_deferred()
 
 

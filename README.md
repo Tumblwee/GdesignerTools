@@ -35,6 +35,20 @@ Godot 4.7 的策划工具套件：关卡、演员、技能、新手引导，共�
 
 关卡页的“文件 → 打开关卡”显示项目中的关卡资产列表，可按名称或路径搜索。选中资产后会自动打开其 `scene_path` 指定的编辑场景；未配置时会在 `res://game_res/level/editing` 创建独立编辑场景。`art_scene_path` 和 `logic_scene_path` 继续用于运行时装配，不能与编辑场景共用。
 
+演员页的“文件 → 打开演员库”同样显示已有演员库列表，可按名称或路径搜索，选中后点击打开或双击。列表也包含当前已打开但尚未保存的库，切换后保留原来的未保存改动和撤销记录。
+
+选中演员后，中间显示实例 Prefab 或预览 Prefab 的真实形象，自动区分 3D 和 2D。3D 支持左键环绕、右键／中键平移；2D 支持拖动平移；两者都支持滚轮缩放、双击重新取景。预览保留 `@tool` 脚本生成外观所需的初始化，普通游戏脚本和持续处理不运行。缺少可用 Prefab 时会显示说明。
+
+先在关卡页打开目标关卡的编辑场景，再切换到演员页，把演员拖入对应的 3D／2D 视口。落点创建插件内置的**演员生成点**，并保存演员库及演员 ID；取消拖拽不创建资源。生成点原型位于 `actor_editor/builtin/ActorSpawnPoint.tres`，ID `1` 属于插件保留范围（用户原型仍从 `1000` 起分配），不会添加到用户原型库。每个生成点可独立移动、复制、删除、撤销和保存。
+
+编辑场景中的生成点显示演员预览和青色圆环，保存时只写生成点与演员引用；运行时生成真实演员，不保存预览几何，也不会重复生成。关卡实例属性显示绑定的演员和演员库，并提供“自动生成”开关。关闭后可调用生成点节点的 `spawn_actor()` 手动生成，调用 `clear_actor()` 清除；默认生成一个演员，重复调用不会叠加。运行时通过 `GDSceneEditorRuntime.load_session()` 装配关卡时，2D／3D 生成点和已经摆好的场景节点均可直接使用。
+
+关卡左侧按**原型库**管理原型。点击库名称右侧的库图标，选择“选择原型库”可引用项目中已有的库，也可以新建或打开库文件。新建关卡默认沿用当前库；多个关卡引用同一份 `GDLevelLibraryRes`，在其中一个关卡修改原型，其他关卡会使用相同的数据。实例、路径和相机仍由各关卡独立保存。已经有实例的关卡不能切换到缺少这些原型的库；删除原型及撤销新建原型时会检查所有关卡的使用情况。
+
+“全局类型”管理所有关卡原型库共用的类型，保存位置是 `res://game_res/level/libraries/PlacementTypes.tres`。点击类型名称前的色块修改颜色，原型列表、实例列表和俯视图标记立即同步；同类型始终使用同一颜色，修改支持保存、撤销和重做。旧目录自动使用按类型 ID 分配的默认色，未分类或类型丢失时显示灰色。添加类型无需生成代码；如需枚举，点击“生成枚举”，首次会使用 `res://game_res/generated/keywords`。中文显示名会转换为合法的内部名称，停用后再次添加同名类型会沿用原 ID 和颜色。
+
+旧关卡首次打开时，会把内嵌原型迁入独立库，并合并旧类型目录；同号异名的类型会重新分配类型 ID，原型 ID 和摆放实例保持不变。点击保存会依次保存全局类型、原型库、外部原型文件和关卡引用。选中原型时撤销作用于库，选中实例时撤销作用于关卡，编辑类型后撤销作用于全局目录。
+
 只有当前处于该关卡的编辑场景中，才能选中、摆放或修改实例、路径和相机。切换到运行时场景或其他场景会清除选择并停止拖拽，点击“进入编辑场景”可返回。每个 `Placements` 容器绑定一份布局，回拉位姿、同步、撤销和删除只作用于该编辑场景内属于该布局的实例。保存全部会先同步视口位姿，再判断哪些文档需要写盘。
 
 技能运行时先检查费用、冷却和标签，通过后扣费。配置了消耗的单位需要注册属性集，未知的消耗属性会拒绝施放。技能服务和效果应用器在同一个事件总线上共享 `tag_store`，支持标签引用计数和层级匹配。游戏侧可以设置技能服务的 `tag_query(owner_id, tag)` 回调补充已有状态。持续效果到期时移除自己授予的标签，瞬时片段直接应用效果并保留施放者信息。
@@ -76,7 +90,7 @@ Godot 不能把脚本是内部类的 Resource 写进 `.tres`。技能的片段�
 ```bash
 GODOT="D:/Godot/4.7.2/Godot_v4.7.2-stable_win64_console.exe"
 "$GODOT" --headless --path . --editor --import
-for t in test_gdesigner_tools test_level_page test_level_workflow test_skill_page test_guide_page test_asset_safety test_level_safety test_skill_runtime_safety; do
+for t in test_gdesigner_tools test_level_page test_level_libraries test_type_colors test_level_workflow test_actor_spawn test_skill_page test_guide_page test_asset_safety test_level_safety test_skill_runtime_safety; do
   "$GODOT" --headless --path . -s "res://addons/gdesigner_tools/tests/$t.gd"
 done
 ```

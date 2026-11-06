@@ -53,13 +53,18 @@ func show_placement(id: int) -> void:
 	var target := _layout
 	var archetype := _layout.find_archetype_by_stable_id(_page.find_placement(id).archetype_stable_id)
 	var key: Array = [&"placement", target, id, _page.find_placement(id).archetype_stable_id]
+	if GDActorSpawnRuntime.is_spawn(_page.find_placement(id)):
+		key.append(_page.find_placement(id).actor_reference)
 	if archetype != null:
 		key.append_array(GDArchetypeInspector.structure_key(archetype))
 	if not _form.begin(key):
 		return
 	var inst := func() -> GDPlacementData.PlacementInstance: return target.editor_try_get_placement(id).get("inst")
 	_live_heading(func() -> String: return _page.placement_title(inst.call()))
-	_add_archetype_choice(id)
+	if GDActorSpawnRuntime.is_spawn(inst.call()):
+		_add_actor_spawn(id, target)
+	else:
+		_add_archetype_choice(id)
 	_form.vector3("位置", func() -> Vector3: return inst.call().position, func(v: Vector3) -> void:
 		if _can_edit_placement(target, id):
 			_set_transform(id, v, inst.call().euler_angles, inst.call().scale, target)
@@ -109,12 +114,44 @@ func _add_archetype_choice(id: int) -> void:
 		"也可以把左侧原型拖到这里替换"
 	)
 	choice.set_drag_forwarding(Callable(),
-		func(_at: Vector2, data: Variant) -> bool: return _page.can_edit_scene() and GDLevelSceneDrop.is_payload(data),
+		func(_at: Vector2, data: Variant) -> bool: return _page.can_edit_scene() and GDLevelSceneDrop.is_payload(data) and not GDLevelSceneDrop.is_actor_payload(data),
 		func(_at: Vector2, data: Variant) -> void:
 			GDLevelSceneDrop.finish_without_placing()
 			if _can_edit_placement(target, id):
 				_page.commands.replace_archetype(id, int(data.get("stable_id", 0)))
 	)
+
+
+func _add_actor_spawn(id: int, target: GDLevelSceneRes) -> void:
+	_form.note("演员生成点 · 插件内置原型")
+	var reference: GDActorReferenceRes = _page.find_placement(id).actor_reference
+	var actor := reference.resolve() if reference != null else null
+	var actor_label := _form.note("演员：%s" % (actor.display_name if actor != null else "引用缺失，请从演员页拖入演员"))
+	if reference != null and reference.library != null:
+		_form.note("演员库：%s" % reference.library.display_name)
+	actor_label.tooltip_text = "从演员页拖入另一个演员可替换生成点的演员"
+	actor_label.mouse_filter = Control.MOUSE_FILTER_STOP
+	actor_label.set_drag_forwarding(Callable(),
+		func(_at: Vector2, data: Variant) -> bool: return _can_edit_placement(target, id) and GDLevelSceneDrop.is_actor_payload(data),
+		func(_at: Vector2, data: Variant) -> void:
+			GDLevelSceneDrop.finish_without_placing()
+			if not _can_edit_placement(target, id):
+				return
+			var new_reference: GDActorReferenceRes = data.actor_reference
+			var error := GDActorSpawnRuntime.validate_dimension(new_reference.resolve(), GDLevelSceneDrop.edited_root() is Node2D)
+			if not error.is_empty():
+				_page.say(error, &"warn")
+				return
+			_page.find_placement(id).actor_reference = new_reference
+			GDLevelSceneDrop.respawn(target, id)
+			_page.doc.commit("替换生成点演员")
+	)
+	_form.toggle("自动生成", func() -> bool: return target.editor_try_get_placement(id)["inst"].actor_spawn_on_ready,
+		func(value: bool) -> void:
+			if _can_edit_placement(target, id):
+				_page.find_placement(id).actor_spawn_on_ready = value
+				GDLevelSceneDrop.respawn(target, id)
+	, "运行时自动生成一个演员；关闭后可通过生成点的 spawn_actor() 手动生成。")
 
 
 ## 换原型：位置和旋转保留，名称跟随新原型，场景节点重新生成。
@@ -224,7 +261,7 @@ func _write_override(id: int, def: GDCustomAttributeDef, value: Variant, target:
 # ── 原型 ──
 
 func show_archetype(archetype: GDArchetypeRes) -> void:
-	if not _form.begin([&"archetype"] + GDArchetypeInspector.structure_key(archetype)):
+	if not _form.begin([&"archetype", _page.library, GDArchetypeInspector.type_items(_layout.placement_archetype_type_keywords)] + GDArchetypeInspector.structure_key(archetype)):
 		return
 	GDArchetypeInspector.add_identity(_form, archetype, _layout.placement_archetype_type_keywords)
 	GDArchetypeInspector.add_override(_form, archetype, _layout.archetypes)
@@ -234,7 +271,7 @@ func show_archetype(archetype: GDArchetypeRes) -> void:
 	_form.custom(preview)
 	_form.on_sync(func() -> void: preview.show_archetype(archetype))
 	GDArchetypeInspector.add_addresses(_form, archetype)
-	GDArchetypeInspector.add_custom_attributes(_form, archetype, func(label: String) -> void: _page.doc.commit(label))
+	GDArchetypeInspector.add_custom_attributes(_form, archetype, _page.commit_library)
 	_form.group("实例 ID 段", true)
 	_form.toggle("自定义 ID 段",
 		func() -> bool: return archetype.use_custom_instance_id_range,

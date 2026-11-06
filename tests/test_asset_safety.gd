@@ -31,6 +31,7 @@ func _run() -> void:
 	_test_document_ownership()
 	_test_conflict_dialog_target()
 	_test_actor_library_name()
+	_test_actor_library_picker()
 	_test_skill_undo_conflict()
 	_test_skill_external_edit()
 	_test_skill_trash_failure()
@@ -129,6 +130,66 @@ func _test_actor_library_name() -> void:
 	page.set_library(library)
 	_check(not page._library_name_error("Safety").is_empty(), "actor library creation rejects an already open name")
 	_check(not page._library_name_error("../escape").is_empty(), "actor library creation rejects path separators")
+	page.free()
+
+
+func _test_actor_library_picker() -> void:
+	var scan_root := _root.path_join("actor_picker")
+	var alpha := GDActorLibraryRes.new()
+	alpha.display_name = "Alpha Picker"
+	var beta := GDActorLibraryRes.new()
+	beta.display_name = "Beta Picker"
+	_check(GDDocument.new(alpha).save(scan_root.path_join("nested/alpha.tres")) == OK and GDDocument.new(beta).save(scan_root.path_join("beta.res")) == OK, "actor picker fixtures save in text and binary formats")
+	GDDocument.new(GDLevelSceneRes.new()).save(scan_root.path_join("not_a_library.tres"))
+	for directory in [".hidden", "ignored", "other_project"]:
+		var path := scan_root.path_join(directory)
+		GDDocument.new(GDActorLibraryRes.new()).save(path.path_join("excluded.tres"))
+		if directory == "ignored":
+			FileAccess.open(path.path_join(".gdignore"), FileAccess.WRITE).store_string("")
+		elif directory == "other_project":
+			FileAccess.open(path.path_join("project.godot"), FileAccess.WRITE).store_string("config_version=5\n")
+	_check(GDActorLibraryPicker.scan_libraries(scan_root) == [alpha, beta], "actor picker discovers nested libraries, sorts names, and excludes levels, hidden folders and other projects")
+	_check(GDActorLibraryPicker.scan_libraries(scan_root.path_join("missing")).is_empty(), "missing library directory produces an empty list")
+	var page := GDActorPage.new()
+	root.add_child(page)
+	page.set_library(alpha)
+	alpha.display_name = "Alpha Picker Edited"
+	page.doc.commit("edit alpha")
+	var edited_doc := page.doc
+	page.set_library(beta)
+	var draft := GDActorLibraryRes.new()
+	draft.display_name = "Unsaved Picker Draft"
+	page.set_library(draft)
+	page._open_library()
+	var dialog := page.get_children().filter(func(child: Node) -> bool: return child is GDActorLibraryPicker).back() as GDActorLibraryPicker
+	_check(dialog != null and not (dialog as Node) is FileDialog and dialog.get_ok_button().disabled, "open actor library presents an asset list and requires selection")
+	if dialog == null:
+		page.free()
+		return
+	dialog._list._search.text = "Picker"
+	dialog._list._search.text_changed.emit("Picker")
+	_check(dialog._list._tree.get_root().get_child_count() == 3, "picker includes open saved libraries and unsaved drafts without duplicates")
+	dialog._list._tree.get_root().get_first_child().select(0)
+	_check(dialog._list.selected_library() == alpha and not dialog.get_ok_button().disabled, "selecting a library enables opening")
+	dialog._list._search.text = "Beta Picker"
+	dialog._list._search.text_changed.emit("Beta Picker")
+	dialog._open_selected()
+	_check(dialog.get_ok_button().disabled and page.library == draft, "filtering out the selection cannot open a hidden library")
+	dialog._list._tree.get_root().get_first_child().select(0)
+	dialog.confirmed.emit()
+	_check(page.library == beta and edited_doc.dirty, "opening another library preserves edits in the previous document")
+	page._open_library()
+	dialog = page.get_children().filter(func(child: Node) -> bool: return child is GDActorLibraryPicker).back() as GDActorLibraryPicker
+	dialog._list._search.text = "Alpha Picker"
+	dialog._list._search.text_changed.emit("Alpha Picker")
+	dialog._list._tree.get_root().get_first_child().select(0)
+	dialog._list.item_activated.emit(alpha)
+	_check(page.library == alpha and page.doc == edited_doc and page.doc.can_undo, "double-click reopens the original library with its edits and undo history")
+	page._open_library()
+	dialog = page.get_children().filter(func(child: Node) -> bool: return child is GDActorLibraryPicker).back() as GDActorLibraryPicker
+	dialog.canceled.emit()
+	dialog.hide()
+	_check(page.library == alpha and page.doc == edited_doc and page.doc.dirty, "cancel keeps the current library and pending edits")
 	page.free()
 
 

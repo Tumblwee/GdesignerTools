@@ -41,7 +41,7 @@ class KeywordIdentifierUtil extends RefCounted:
 				return {"ok": false, "reason": "「%s」只能包含字母 / 数字 / 下划线。" % ident}
 		if CSHARP_KEYWORDS.has(ident):
 			return {"ok": false, "reason": "「%s」是保留关键字，不能作为标识符。" % ident}
-		if policy == IdentifierPolicy.KEYWORD_ENTRY and ident == "None":
+		if policy == IdentifierPolicy.KEYWORD_ENTRY and ident in ["None", "NONE"]:
 			return {"ok": false, "reason": "「None」是生成枚举的保留 0 值，不能作为 keyword 名。"}
 		return {"ok": true, "reason": ""}
 
@@ -72,7 +72,16 @@ class KeywordEntry extends Resource:
 	@export var description: String = ""
 	@export var deprecated: bool = false
 	@export var icon_id: String = ""
+	## 透明值仅用于兼容旧目录；未配置时按类型 ID 取默认色。
+	@export var display_color: Color = Color(0, 0, 0, 0)
 	@export var value_type: int = GDCoreTypes.KeywordValueType.STRING
+
+	func get_display_color() -> Color:
+		return display_color if display_color.a > 0.0 else default_display_color(stable_id)
+
+	static func default_display_color(type_id: int) -> Color:
+		var hues: Array[float] = [0.56, 0.12, 0.33, 0.74, 0.02, 0.46, 0.83, 0.22]
+		return Color.from_hsv(hues[absi(type_id) % hues.size()], 0.52, 0.9)
 
 	func assign_stable_id(id: int) -> void:
 		stable_id = id
@@ -152,6 +161,7 @@ class KeywordCatalogRes extends Resource:
 		entry.editor_set_metadata(p_display_name, p_description)
 		var id := editor_allocate_next_stable_id()
 		entry.assign_stable_id(id)
+		entry.display_color = KeywordEntry.default_display_color(id)
 		entries.append(entry)
 		emit_changed()
 		return entry

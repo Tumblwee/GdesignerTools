@@ -4,13 +4,12 @@ extends GDPage
 
 ## 演员编辑器：左边演员列表，中间真实预览，右边属性。
 
-const FILTERS := ["*.tres ; 演员库"]
-
 var _list: GDLibraryList = null
 var _preview: GDArchetypePreviewPanel = null
 var _form: GDForm = null
 var _selected: GDActorLibraryRes.ActorArchetypeRes = null
 var _opened_default: bool = false
+var level_provider: Callable = Callable()
 
 
 var library: GDActorLibraryRes:
@@ -22,7 +21,6 @@ func _build() -> void:
 	toolbar.add_child(GDEditorUi.menu_button("文件", &"", "新建、打开、另存为", [
 		{"text": "新建演员库…", "do": _new_library},
 		{"text": "打开演员库…", "do": _open_library},
-		{"text": "打开示例演员库", "do": func() -> void: set_library(GDSampleFactory.load_actor_library())},
 		null,
 		{"text": "另存为…", "do": save_as_current},
 	]))
@@ -36,6 +34,7 @@ func _build() -> void:
 	_list.delete_requested.connect(_delete)
 	_list.rename_requested.connect(_rename)
 	_list.duplicate_requested.connect(_duplicate)
+	_list.drag_provider = _begin_actor_drag
 
 	_preview = GDArchetypePreviewPanel.new()
 	_form = GDForm.new()
@@ -65,6 +64,20 @@ func get_current_library() -> GDActorLibraryRes:
 	return library
 
 
+func _begin_actor_drag(actor: GDArchetypeRes) -> Variant:
+	var target: GDLevelSceneRes = level_provider.call() if level_provider.is_valid() else null
+	if target == null:
+		say("请先在关卡页打开需要摆放演员的关卡。", &"warn")
+		return null
+	if library.resource_path.is_empty():
+		save_current()
+		if library.resource_path.is_empty():
+			say("请先保存演员库，再拖入场景。", &"warn")
+			return null
+	var payload := GDLevelSceneDrop.begin_actor(actor, library, target)
+	return payload if not payload.is_empty() else null
+
+
 func select_archetype(archetype: GDActorLibraryRes.ActorArchetypeRes) -> void:
 	_selected = archetype
 	_refresh_detail()
@@ -81,7 +94,7 @@ func _refresh() -> void:
 
 func _refresh_list() -> void:
 	if library == null:
-		_list.set_empty_state(GDEditorUi.empty_state("没有打开演员库", "", "打开示例演员库", func() -> void: set_library(GDSampleFactory.load_actor_library())))
+		_list.set_empty_state(GDEditorUi.empty_state("没有打开演员库", "", "打开演员库", _open_library))
 		_list.set_items([])
 		return
 	_list.set_empty_state(GDEditorUi.empty_state("还没有演员", "演员是可复用的角色原型。", "新建演员", _new_actor))
@@ -101,7 +114,7 @@ func _row_of(archetype: GDActorLibraryRes.ActorArchetypeRes) -> Dictionary:
 		"key": archetype,
 		"text": archetype.display_name if not archetype.display_name.is_empty() else archetype.resource_name,
 		"detail": "#%d" % archetype.stable_id,
-		"color": GDEditorUi.hue_color(archetype.archetype_type_stable_id),
+		"color": GDEditorUi.type_color(library.actor_type_keywords, archetype.archetype_type_stable_id),
 	}
 	if archetype.is_override_archetype:
 		row["tooltip"] = "变体，复写自 %s" % (archetype.override_base_archetype.display_name if archetype.override_base_archetype != null else "（丢失）")
@@ -194,13 +207,7 @@ func _library_name_error(module_name: String) -> String:
 
 
 func _open_library() -> void:
-	GDDialogs.open_file(self, "打开演员库", PackedStringArray(FILTERS), func(path: String) -> void:
-		var loaded := ResourceLoader.load(path)
-		if loaded is GDActorLibraryRes:
-			set_library(loaded)
-		else:
-			say("这不是演员库：%s" % path, &"danger")
-	)
+	GDActorLibraryPicker.open(self, set_library, _docs.keys())
 
 
 func _new_actor() -> void:
@@ -292,4 +299,6 @@ func _edit_types() -> void:
 		keywords.enum_namespace = "%s.Keywords" % GDActorEditorServices.ActorArchetypeAssetPaths.resolve_module_name(library)
 		keywords.enum_type_name = "ActorArchetypeTypeKind"
 		library.editor_set_actor_type_keywords(keywords)
-	GDKeywordCatalogDialog.open(self, library.actor_type_keywords, func(label: String) -> void: doc.commit(label))
+	var target := doc
+	var dialog := GDKeywordCatalogDialog.open(self, library.actor_type_keywords, func(label: String) -> void: target.commit(label))
+	target.changed.connect(dialog.refresh_colors)

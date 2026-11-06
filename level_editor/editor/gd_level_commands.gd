@@ -17,6 +17,7 @@ var layout: GDLevelSceneRes:
 
 
 func _commit(label: String) -> void:
+	_page._history_doc = _page.doc
 	_page.doc.commit(label)
 
 
@@ -54,20 +55,21 @@ func new_archetype() -> void:
 	archetype.resource_name = _unique_asset_name("NewArchetype%d" % n)
 	archetype.editor_init_with_addresses(layout.editor_allocate_next_archetype_stable_id(), "新原型_%d" % n, "", "")
 	layout.editor_add_archetype(archetype)
-	_commit("新建原型")
+	_page.commit_library("新建原型")
 	_page.select_archetype(archetype)
 
 
 func rename_archetype(archetype: GDArchetypeRes) -> void:
+	var target := _page.library
 	GDDialogs.form(_page, "重命名原型", [
 		{"key": "name", "label": "名称", "value": _asset_stem(archetype.resource_name)},
 		{"key": "display", "label": "显示名", "value": archetype.display_name},
 	], func(values: Dictionary) -> void:
-		var result := layout.editor_rename_archetype(archetype, _asset_name(str(values["name"])), str(values["display"]))
-		if bool(result.get("ok", false)):
-			_commit("重命名原型")
-		else:
-			_page.say(str(result.get("error", "重命名失败")), &"danger")
+		if _page.library != target or not target.archetypes.has(archetype):
+			return
+		archetype.resource_name = _asset_name(str(values["name"]))
+		archetype.editor_set_display_name(str(values["display"]))
+		_page.commit_library("重命名原型")
 	, func(values: Dictionary) -> String:
 		var stem := str(values["name"])
 		if not _is_identifier(stem):
@@ -88,33 +90,23 @@ func _add_copy(archetype: GDArchetypeRes, as_variant: bool) -> void:
 	var display := "%s %s" % [archetype.display_name, "变体" if as_variant else "副本"]
 	var copy := GDArchetypeOps.create_duplicate(archetype, layout.editor_allocate_next_archetype_stable_id(), _unique_asset_name(stem), display, as_variant)
 	layout.editor_add_archetype(copy)
-	_commit("创建变体" if as_variant else "复制原型")
+	_page.commit_library("创建变体" if as_variant else "复制原型")
 	_page.select_archetype(copy)
 
 
-## 删除原型会连带删掉用它的实例，所以这时才确认。
+## 共享库删除不级联破坏关卡；先移除所有使用它的实例。
 func delete_archetype(archetype: GDArchetypeRes) -> void:
-	var uses := layout.editor_count_placements_by_archetype_stable_id(archetype.stable_id)
-	if uses > 0 and not _page.require_edit_scene():
-		return
-	if uses == 0:
-		_remove_archetype(archetype)
-		return
-	var target := layout
-	GDDialogs.confirm(_page, "删除原型", "有 %d 个实例使用「%s」，会一起删除。" % [uses, archetype.display_name], "删除", func() -> void:
-		if layout == target and _page.require_edit_scene():
-			_remove_archetype(archetype)
-	)
+	_remove_archetype(archetype)
 
 
 func _remove_archetype(archetype: GDArchetypeRes) -> void:
-	if layout.editor_count_placements_by_archetype_stable_id(archetype.stable_id) > 0 and not _page.require_edit_scene():
+	var users := _page.archetype_users(archetype)
+	if not users.is_empty():
+		_page.say("无法删除：以下关卡仍在使用此原型：%s。请先移除对应实例。" % "、".join(users), &"warn")
 		return
-	layout.editor_remove_placements_by_archetype_stable_id(archetype.stable_id)
 	layout.editor_remove_archetype(archetype)
-	GDLevelSceneDrop.reconcile_scene(layout)
-	_commit("删除原型")
-	_page.say("已删除「%s」，可以撤销" % archetype.display_name)
+	_page.commit_library("删除原型")
+	_page.say("已从共享库删除「%s」，可以撤销" % archetype.display_name)
 
 
 func replace_archetype(id: int, stable_id: int) -> void:
@@ -146,7 +138,7 @@ func _unique_asset_name(stem: String) -> String:
 
 
 func _module_name() -> String:
-	var stem := layout.resource_name.trim_prefix("LevelScene_").replace("_", "")
+	var stem := _page.library.resource_name.trim_prefix("PlacementLibrary_").replace("_", "")
 	return stem if _is_identifier(stem) else "Level"
 
 
@@ -253,6 +245,11 @@ func duplicate_item(kind: GDLevelPage.Kind, key: int) -> void:
 				return
 			id = int(added["instance_id"])
 			layout.editor_replace_placement(id, _page.find_placement(id).with_overrides(source.attribute_overrides))
+			var copy: GDPlacementData.PlacementInstance = _page.find_placement(id)
+			copy.actor_reference = source.actor_reference.duplicate() if source.actor_reference != null else null
+			copy.actor_spawn_on_ready = source.actor_spawn_on_ready
+			if GDActorSpawnRuntime.is_spawn(source):
+				copy.display_name = "%s 副本 #%d" % [source.display_name, id]
 			GDLevelSceneDrop.reconcile_scene(layout)
 		GDLevelPage.Kind.PATH:
 			var source := _page.find_path(key)
@@ -371,14 +368,7 @@ func open_level() -> void:
 
 
 func edit_types() -> void:
-	if layout == null:
-		return
-	if layout.placement_archetype_type_keywords == null:
-		var catalog := GDKeywordCatalogRes.new()
-		catalog.enum_namespace = "%s.Keywords" % _module_name()
-		catalog.enum_type_name = "PlacementArchetypeTypeKind"
-		layout.editor_bind_archetype_type_keywords(catalog)
-	GDKeywordCatalogDialog.open(_page, layout.placement_archetype_type_keywords, _commit)
+	_page.edit_global_types()
 
 
 func export_csv() -> void:

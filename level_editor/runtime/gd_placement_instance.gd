@@ -142,6 +142,9 @@ class PlacementInstance extends Resource:
 	@export var initial_level: int = 1
 	@export var attribute_overrides: Array = []
 	@export var extras: Array = []
+	## 仅插件内置的演员生成点使用。
+	@export var actor_reference: GDActorReferenceRes = null
+	@export var actor_spawn_on_ready: bool = true
 
 	func _init(
 		p_instance_id: int = 0,
@@ -212,6 +215,8 @@ class PlacementInstance extends Resource:
 	func with_archetype_stable_id(new_arch_id: int) -> PlacementInstance:
 		var copy := _clone_shell(position, euler_angles, scale, initial_level)
 		copy.archetype_stable_id = new_arch_id
+		if new_arch_id != archetype_stable_id:
+			copy.actor_reference = null
 		return copy
 
 	func editor_update_transform(p_pos: Vector3, p_euler: Vector3, p_scale: Vector3) -> void:
@@ -233,6 +238,8 @@ class PlacementInstance extends Resource:
 		var copy := GDPlacementInstanceRes.new(instance_id, archetype_stable_id, p_pos, p_euler, p_scale, p_level)
 		copy.instance_name = instance_name
 		copy.display_name = display_name
+		copy.actor_reference = actor_reference
+		copy.actor_spawn_on_ready = actor_spawn_on_ready
 		for ov in attribute_overrides:
 			if ov != null:
 				copy.attribute_overrides.append(ov.clone_override())

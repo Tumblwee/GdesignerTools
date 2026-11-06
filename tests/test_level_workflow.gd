@@ -9,6 +9,7 @@ var _directories: Array[String] = []
 
 
 func _initialize() -> void:
+	GDLevelLibraries.storage_root = "user://test_level_workflow_libraries_%d" % Time.get_ticks_usec()
 	_run.call_deferred()
 
 

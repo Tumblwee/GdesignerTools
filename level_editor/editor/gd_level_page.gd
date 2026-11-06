@@ -36,6 +36,17 @@ var _seen_ids: Array[int] = []
 var _opened_default: bool = false
 var _scene_hint: Label = null
 var _opening_scene: bool = false
+var _library_label: Label = null
+var _last_library: GDLevelLibraryRes = null
+var _history_doc: GDDocument = null
+
+var library: GDLevelLibraryRes:
+	get:
+		return layout.archetype_library if layout != null else null
+
+var library_doc: GDDocument:
+	get:
+		return _docs.get(library)
 
 
 var layout: GDLevelSceneRes:
@@ -48,7 +59,6 @@ func _build() -> void:
 	toolbar.add_child(GDEditorUi.menu_button("文件", &"", "新建、打开、另存为", [
 		{"text": "新建关卡…", "do": commands.new_level},
 		{"text": "打开关卡…", "do": commands.open_level},
-		{"text": "打开示例关卡", "do": func() -> void: set_layout(GDSampleFactory.load_level_scene())},
 		null,
 		{"text": "另存为…", "do": save_as_current},
 	]))
@@ -56,13 +66,26 @@ func _build() -> void:
 	var sync := GDEditorUi.text_button("同步到场景", _sync_to_scene, &"flat")
 	sync.tooltip_text = "把场景里还没有的实例生成到 Placements 下"
 	toolbar.add_child(sync)
-	toolbar.add_child(GDEditorUi.text_button("类型目录", commands.edit_types, &"flat"))
+	toolbar.add_child(GDEditorUi.text_button("全局类型", commands.edit_types, &"flat"))
 	toolbar_right.add_child(GDEditorUi.menu_button("", &"GuiTabMenuHl", "更多", [
 		{"text": "导出摆放 CSV…", "do": commands.export_csv},
 		{"text": "迁移 ID…", "do": commands.migrate_ids},
 	]))
 
 	_archetype_list = GDLibraryList.new("原型", "搜索名称或 ID")
+	var library_box := VBoxContainer.new()
+	var library_bar := HBoxContainer.new()
+	library_box.add_child(library_bar)
+	_library_label = GDEditorUi.hint_label("")
+	_library_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	library_bar.add_child(_library_label)
+	library_bar.add_child(GDEditorUi.menu_button("", &"Filesystem", "选择可跨关卡共用的原型库", [
+		{"text": "选择原型库…", "do": choose_library},
+		{"text": "新建原型库…", "do": new_library},
+		{"text": "打开原型库文件…", "do": open_library},
+	]))
+	library_box.add_child(_archetype_list)
+	_archetype_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_archetype_list.header.add_child(GDEditorUi.tool_button(&"Add", "新建原型", commands.new_archetype))
 	_archetype_list.drag_provider = func(archetype: GDArchetypeRes) -> Variant: return GDLevelSceneDrop.begin(archetype, layout)
 	_archetype_list.item_selected.connect(select_archetype)
@@ -74,11 +97,14 @@ func _build() -> void:
 
 	_form = GDForm.new()
 	_form.committed.connect(func(label: String, merge: bool) -> void:
-		if doc != null and (_kind == Kind.NONE or can_edit_scene()):
+		if _inspect_archetype:
+			commit_library("修改%s" % label, merge)
+		elif doc != null and (_kind == Kind.NONE or can_edit_scene()):
+			_history_doc = doc
 			doc.commit("修改%s" % label, merge)
 	)
 	_inspector = GDLevelInspector.new(self, _form)
-	set_panes(GDEditorUi.pane(_archetype_list), _build_center(), GDEditorUi.pane(GDEditorUi.scroll_of(_form)))
+	set_panes(GDEditorUi.pane(library_box), _build_center(), GDEditorUi.pane(GDEditorUi.scroll_of(_form)))
 	GDLevelSceneDrop.bind_status(_on_drop_status, _on_scene_bound)
 	_show_tab(0)
 	_refresh()
@@ -174,14 +200,31 @@ func set_layout(new_layout: GDLevelSceneRes) -> void:
 	GDLevelSceneDrop.register_layout(new_layout)
 	# 场景绑定属于文档身份，先建立再记录初始快照，避免撤销把工作区解绑。
 	var scene_setup: Dictionary = {}
+	var migrated := false
+	if new_layout != null:
+		var types_doc := _shared_document(GDLevelLibraries.catalog())
+		var types_before := GDDocument.capture(types_doc.resource)
+		migrated = GDLevelLibraries.prepare(new_layout, _last_library)
+		if GDDocument.capture(types_doc.resource) != types_before:
+			types_doc.commit("合并旧关卡类型")
+		_last_library = new_layout.archetype_library
+		var shared := _shared_document(_last_library)
+		if migrated and _last_library.resource_path.is_empty():
+			shared.mark_unsaved()
+		if not _docs.has(new_layout):
+			_docs[new_layout] = GDDocument.new(new_layout, [new_layout.archetype_library, types_doc.resource])
 	if new_layout != null and Engine.is_editor_hint():
 		scene_setup = GDLevelEditScene.ensure_scene(new_layout)
 	open_document(new_layout)
+	_history_doc = doc
 	if new_layout != null:
-		if (assigned_identity and not new_layout.resource_path.is_empty()) or bool(scene_setup.get("binding_changed", false)):
+		if migrated or (assigned_identity and not new_layout.resource_path.is_empty()) or bool(scene_setup.get("binding_changed", false)):
 			doc.mark_unsaved()
 		new_layout.editor_reconcile_next_ids_after_load()
-		doc.on_restored = func() -> void: GDLevelSceneDrop.reconcile_scene(new_layout)
+		doc.on_restored = func() -> void:
+			var restored_doc: GDDocument = _docs[new_layout]
+			restored_doc.snapshot_exclusions = [new_layout.archetype_library, GDLevelLibraries.catalog()]
+			GDLevelSceneDrop.reconcile_scene(new_layout)
 	_refresh()
 	_plan.fit_all()
 	if new_layout != null and Engine.is_editor_hint():
@@ -240,8 +283,14 @@ func on_scene_changed() -> void:
 
 
 func _step_history(back: bool) -> void:
-	if require_edit_scene():
-		super._step_history(back)
+	var target := _history_doc if _history_doc != null else doc
+	if target == null or (target == doc and not require_edit_scene()):
+		return
+	if back:
+		target.undo()
+	else:
+		target.redo()
+	_refresh()
 
 
 func get_current_layout() -> GDLevelSceneRes:
@@ -255,6 +304,8 @@ func select_placement(id: int) -> void:
 func select_archetype(archetype: GDArchetypeRes) -> void:
 	_archetype = archetype
 	_inspect_archetype = archetype != null
+	_history_doc = library_doc if archetype != null else doc
+	_sync_chrome()
 	_refresh_selection()
 
 
@@ -264,6 +315,8 @@ func select_item(kind: Kind, id: int) -> void:
 		_refresh_selection()
 		return
 	_kind = kind
+	_history_doc = doc
+	_sync_chrome()
 	_id = id
 	_archetype = null
 	_inspect_archetype = false
@@ -290,6 +343,8 @@ func cli_context(command: String) -> PackedStringArray:
 
 
 func _suggest_save_path(resource: Resource) -> String:
+	if resource is GDLevelLibraryRes or resource is GDKeywordCatalogRes:
+		return GDLevelLibraries.save_path(resource)
 	return "%s/%s.tres" % [LEVEL_DIR, resource.resource_name] if not resource.resource_name.is_empty() else ""
 
 
@@ -299,8 +354,176 @@ func prepare_save(target: GDDocument) -> void:
 
 
 func _pull_scene(target: GDDocument, scene_root: Node = null) -> void:
+	if not target.resource is GDLevelSceneRes:
+		return
 	if GDLevelSceneDrop.pull_transforms_from_scene(target.resource as GDLevelSceneRes, scene_root):
 		target.commit("同步场景位姿")
+
+
+func _shared_document(resource: Resource) -> GDDocument:
+	if not _docs.has(resource):
+		var shared := GDDocument.new(resource)
+		_docs[resource] = shared
+		shared.changed.connect(_refresh)
+		shared.state_changed.connect(_sync_chrome)
+		shared.on_restored = func() -> void:
+			for candidate: Resource in _docs:
+				if candidate is GDLevelSceneRes:
+					GDLevelSceneDrop.reconcile_scene(candidate)
+		if resource is GDLevelLibraryRes:
+			shared.can_restore = func(snapshot: Dictionary) -> bool:
+				var restored: Array = snapshot[resource][&"archetypes"]
+				for archetype: GDArchetypeRes in resource.archetypes:
+					if archetype != null and not restored.has(archetype) and not archetype_users(archetype).is_empty():
+						say("无法撤销：此操作会移除其他关卡仍在使用的原型，请先移除对应实例。", &"warn")
+						return false
+				return true
+		if resource.resource_path.is_empty():
+			shared.mark_unsaved()
+	return _docs[resource]
+
+
+func commit_library(label: String, merge: bool = false) -> void:
+	if library_doc != null:
+		_history_doc = library_doc
+		library_doc.commit(label, merge)
+
+
+func edit_global_types() -> void:
+	var target := _shared_document(GDLevelLibraries.catalog())
+	_history_doc = target
+	var dialog := GDKeywordCatalogDialog.open(self, target.resource, func(label: String) -> void:
+		_history_doc = target
+		target.commit(label)
+	)
+	dialog.title = "全局原型类型（所有关卡与原型库共用）"
+	target.changed.connect(dialog.refresh_colors)
+	_sync_chrome()
+
+
+func bind_library(selected: GDLevelLibraryRes) -> bool:
+	if layout == null or selected == null:
+		return false
+	# 实例只记录 stable_id，换库必须验证对象身份，不能把同号的另一原型当作原件。
+	for inst in layout.placements:
+		if inst != null and not selected.archetypes.has(layout.find_archetype_by_stable_id(inst.archetype_stable_id)):
+			say("此关卡仍有实例引用当前库；请先移除这些实例，再切换原型库。", &"warn")
+			return false
+	_shared_document(selected)
+	layout.archetype_library = selected
+	_last_library = selected
+	doc.snapshot_exclusions = [selected, GDLevelLibraries.catalog()]
+	_clear_selection()
+	_history_doc = doc
+	doc.commit("选择原型库")
+	return true
+
+
+func new_library() -> void:
+	GDDialogs.prompt(self, "新建原型库", "库名称", "新原型库", func(value: String) -> void:
+		var created := GDLevelLibraryRes.new()
+		created.display_name = value
+		created.resource_name = "PlacementLibrary_%s_%08x" % [value.validate_filename(), randi()]
+		bind_library(created)
+	, func(value: String) -> String: return "库名称不能为空" if value.is_empty() else "")
+
+
+func open_library() -> void:
+	GDDialogs.open_file(self, "打开共享原型库", PackedStringArray(["*.tres ; 原型库"]), func(path: String) -> void:
+		var selected := load(path) as GDLevelLibraryRes
+		if selected == null:
+			say("请选择 GDLevelLibraryRes 原型库资源。", &"warn")
+		else:
+			bind_library(selected)
+	)
+
+
+func choose_library() -> void:
+	var libraries: Array[GDLevelLibraryRes] = GDLevelLibraries.scan_libraries()
+	for resource: Resource in _docs:
+		if resource is GDLevelLibraryRes and not libraries.has(resource):
+			libraries.append(resource)
+	var items: Array = []
+	for index in range(libraries.size()):
+		items.append(["%s · %d 个原型" % [libraries[index].display_name, libraries[index].archetypes.size()], index])
+	if items.is_empty():
+		new_library()
+		return
+	GDDialogs.form(self, "选择共享原型库", [{"key": "library", "label": "原型库", "value": maxi(0, libraries.find(library)), "items": items}], func(values: Dictionary) -> void:
+		bind_library(libraries[int(values.library)])
+	)
+
+
+## 共享原型删除前检查磁盘关卡及尚未保存的关卡，避免跨关卡悬空引用。
+func archetype_users(archetype: GDArchetypeRes) -> PackedStringArray:
+	var levels := GDLevelAssetPicker.scan_levels()
+	for resource: Resource in _docs:
+		if resource is GDLevelSceneRes and not levels.has(resource):
+			levels.append(resource)
+	var users := PackedStringArray()
+	for level in levels:
+		if level.archetypes.has(archetype) and level.editor_count_placements_by_archetype_stable_id(archetype.stable_id) > 0:
+			users.append(doc_title(level))
+	return users
+
+
+func _save_shared() -> Error:
+	# 类型先保存，再保存库（含外部原型），最后由调用者保存关卡的引用。
+	for kind in [0, 1]:
+		for resource: Resource in _docs:
+			if (kind == 0 and not resource is GDKeywordCatalogRes) or (kind == 1 and not resource is GDLevelLibraryRes):
+				continue
+			var target: GDDocument = _docs[resource]
+			if not target.dirty and not resource.resource_path.is_empty():
+				continue
+			var err := GDLevelLibraries.save_external_children(resource)
+			if err == OK:
+				err = target.save(_suggest_save_path(resource) if resource.resource_path.is_empty() else "")
+			if err != OK:
+				say("保存共享资产失败：%s（%s）" % [doc_title(resource), error_string(err)], &"danger")
+				return err
+	var saved_actors := {}
+	for resource: Resource in _docs:
+		if not resource is GDLevelSceneRes:
+			continue
+		for inst in resource.placements:
+			if inst == null or inst.actor_reference == null:
+				continue
+			var actor_library: GDActorLibraryRes = inst.actor_reference.library
+			if actor_library == null or saved_actors.has(actor_library):
+				continue
+			var err := GDLevelLibraries.save_external_children(actor_library)
+			if err == OK:
+				err = GDDocument.new(actor_library).save()
+			if err != OK:
+				say("请先保存生成点引用的演员库：%s" % actor_library.display_name, &"danger")
+				return err
+			saved_actors[actor_library] = true
+	return OK
+
+
+func _save(target: GDDocument) -> void:
+	prepare_save(target)
+	if _save_shared() == OK:
+		super._save(target)
+
+
+func _save_as(target: GDDocument, path: String, allow_overwrite: bool = false) -> Error:
+	prepare_save(target)
+	var err := _save_shared()
+	return super._save_as(target, path, allow_overwrite) if err == OK else err
+
+
+func _sync_chrome() -> void:
+	super._sync_chrome()
+	var target := _history_doc if _history_doc != null else doc
+	if target != null:
+		_undo_btn.disabled = not target.can_undo
+		_redo_btn.disabled = not target.can_redo
+		_undo_btn.tooltip_text = "撤销：%s" % target.undo_label
+		_redo_btn.tooltip_text = "重做：%s" % target.redo_label
+	if doc != null:
+		_doc_label.text = "%s%s" % [doc_title(doc.resource), "  ●" if is_dirty() else ""]
 
 
 func capture_scene(scene_root: Node) -> void:
@@ -341,10 +564,11 @@ static func path_title(path: GDPathSystem.PathInstance) -> String:
 	return path.path_name if not path.path_name.is_empty() else "路径 #%d" % path.path_id
 
 
-## 原型的标识色；亮色主题下压暗，保证在浅底上看得清。
-static func archetype_color(stable_id: int) -> Color:
-	var hue := GDEditorUi.hue_color(stable_id)
-	return hue if GDEditorUi.is_dark_theme() else Color.from_hsv(hue.h, 0.7, 0.68)
+## 原型和实例均跟随全局类型颜色，不受原型 ID 或编辑器主题影响。
+func archetype_color(stable_id: int) -> Color:
+	var archetype := layout.find_archetype_by_stable_id(stable_id) if layout != null else null
+	var catalog: Resource = layout.placement_archetype_type_keywords if layout != null else null
+	return GDEditorUi.type_color(catalog, archetype.archetype_type_stable_id if archetype != null else 0)
 
 
 ## 能被命令行按路径加载的独立资源文件。
@@ -391,9 +615,13 @@ func _refresh() -> void:
 	for list in _lists:
 		list.modulate.a = 1.0 if editable else 0.55
 	_seen_ids = _placement_ids()
+	if _library_label != null:
+		_library_label.text = "未选择原型库" if library == null else library.display_name
+		_library_label.tooltip_text = "" if library == null else library.resource_path
 	_refresh_archetypes()
 	_refresh_lists()
 	_refresh_selection()
+	_sync_chrome()
 
 
 func _validate_selection() -> void:
@@ -443,7 +671,7 @@ func _refresh_selection() -> void:
 
 func _refresh_archetypes() -> void:
 	if layout == null:
-		_archetype_list.set_empty_state(GDEditorUi.empty_state("没有打开关卡", "", "打开示例关卡", func() -> void: set_layout(GDSampleFactory.load_level_scene())))
+		_archetype_list.set_empty_state(GDEditorUi.empty_state("没有打开关卡", "", "打开关卡", commands.open_level))
 		_archetype_list.set_items([])
 		return
 	_archetype_list.set_empty_state(GDEditorUi.empty_state("还没有原型", "原型是可以反复摆放的建筑或物件。", "新建原型", commands.new_archetype))
@@ -615,7 +843,7 @@ func _on_plan_dropped(data: Variant, xz: Vector2) -> void:
 	GDLevelSceneDrop.finish_without_placing()
 	var archetype := layout.find_archetype_by_stable_id(int(data.get("stable_id", 0))) if layout != null else null
 	if archetype != null:
-		_place(archetype, Vector3(xz.x, 0.0, xz.y))
+		_place(archetype, Vector3(xz.x, 0.0, xz.y), data.get("actor_reference") if GDLevelSceneDrop.is_actor_payload(data) else null)
 
 
 # ── 摆放 ──
@@ -624,14 +852,14 @@ func place_at_view(archetype: GDArchetypeRes) -> void:
 	_place(archetype, GDLevelSceneDrop.suggest_drop_point())
 
 
-func _place(archetype: GDArchetypeRes, point: Vector3) -> void:
+func _place(archetype: GDArchetypeRes, point: Vector3, actor_reference: GDActorReferenceRes = null) -> void:
 	if not require_edit_scene():
 		return
 	var target := layout
 	GDLevelSceneDrop.request_scene_binding(target, func() -> void:
 		if layout != target:
 			return
-		var result := GDLevelSceneDrop.place_archetype(target, archetype, point)
+		var result := GDLevelSceneDrop.place_archetype(target, archetype, point, null, actor_reference)
 		if not bool(result.get("ok", false)):
 			say(str(result.get("error", "摆放失败")), &"warn")
 			return

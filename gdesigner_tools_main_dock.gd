@@ -50,7 +50,7 @@ func activate_current() -> void:
 
 
 func save_all() -> void:
-	for page in _pages:
+	for page in [actor_editor, level_editor, skill_editor, guide_editor]:
 		page.save_all()
 
 
@@ -81,6 +81,7 @@ func _build_header() -> void:
 func _build_pages() -> void:
 	level_editor = GDLevelPage.new()
 	actor_editor = GDActorPage.new()
+	actor_editor.level_provider = level_editor.get_current_layout
 	skill_editor = GDSkillPage.new()
 	guide_editor = GDGuidePage.new()
 	_pages = [level_editor, actor_editor, skill_editor, guide_editor]

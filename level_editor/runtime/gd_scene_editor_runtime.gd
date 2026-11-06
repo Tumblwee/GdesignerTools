@@ -210,6 +210,8 @@ static func load_session(options: SceneEditorBootstrapOptions) -> PlacementSessi
 		return null
 
 	var arch_reg := GDArchetypeRes.ArchetypeRegistry.new(options.layout.archetypes)
+	if options.layout.placements.any(func(inst: Variant) -> bool: return GDActorSpawnRuntime.is_spawn(inst)):
+		arch_reg = GDArchetypeRes.ArchetypeRegistry.new(options.layout.archetypes + [GDActorSpawnRuntime.archetype()])
 	var inst_reg := PlacementInstanceRegistry.new()
 	var session := PlacementSession.new(options, inst_reg, arch_reg)
 
@@ -222,7 +224,9 @@ static func load_session(options: SceneEditorBootstrapOptions) -> PlacementSessi
 		var created := spawned == null
 		if created:
 			var raw: Node = null
-			if arch != null:
+			if GDActorSpawnRuntime.is_spawn(inst):
+				raw = GDActorSpawnRuntime.create_point(inst, options.parent is Node2D, false)
+			elif arch != null:
 				var ps := arch.editor_resolve_manufactured_prefab()
 				if ps != null:
 					raw = ps.instantiate()
@@ -233,7 +237,6 @@ static func load_session(options: SceneEditorBootstrapOptions) -> PlacementSessi
 			if raw != null and raw != spawned:
 				spawned.add_child(raw)
 			spawned.name = GDPlacementData.PlacementInstanceIdRangeLogic.resolve_display_name(inst, arch)
-			options.parent.add_child(spawned)
 		spawned.set_meta(PLACEMENT_ID_META, inst.instance_id)
 		spawned.set_meta(PLACEMENT_LAYOUT_META, layout_identity(options.layout))
 
@@ -248,6 +251,17 @@ static func load_session(options: SceneEditorBootstrapOptions) -> PlacementSessi
 			flat.position = Vector2(placed.x, placed.y)
 			flat.rotation_degrees = inst.euler_angles.z
 			flat.scale = Vector2(inst.scale.x, inst.scale.y)
+		if created:
+			options.parent.add_child(spawned)
+		elif GDActorSpawnRuntime.is_point(spawned):
+			var changed: bool = spawned.preview_only or not GDActorReferenceRes.same(spawned.actor_reference, inst.actor_reference) or spawned.initial_level != inst.initial_level or spawned.spawn_on_ready != inst.actor_spawn_on_ready
+			spawned.preview_only = false
+			spawned.initial_level = inst.initial_level
+			spawned.spawn_on_ready = inst.actor_spawn_on_ready
+			if not GDActorReferenceRes.same(spawned.actor_reference, inst.actor_reference):
+				spawned.actor_reference = inst.actor_reference.duplicate() if inst.actor_reference != null else null
+			elif changed:
+				spawned._refresh()
 
 		var marker: PlacementInstanceMarker = null
 		for child in spawned.get_children():

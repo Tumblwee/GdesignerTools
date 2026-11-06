@@ -30,13 +30,29 @@ class LevelArchetypeRes extends GDArchetypeRes:
 @export var art_scene_name: String = ""
 
 @export var placements: Array = []
-@export var archetypes: Array[GDArchetypeRes] = []
+@export var archetype_library: GDLevelLibraryRes = null
+## 兼容旧关卡和运行时调用；绑定库后不再把原型内嵌到关卡中。
+@export var archetypes: Array[GDArchetypeRes] = []:
+	get:
+		return archetype_library.archetypes if archetype_library != null else archetypes
+	set(value):
+		if archetype_library != null:
+			archetype_library.archetypes = value
+		else:
+			archetypes = value
 @export var nav_mesh_prefab: PackedScene = null
 @export var path_type_keywords: Resource = null
 @export var placement_archetype_type_keywords: Resource = null
 
 @export var next_instance_id: int = INSTANCE_ID_START
-@export var next_archetype_stable_id: int = STABLE_ID_START
+@export var next_archetype_stable_id: int = STABLE_ID_START:
+	get:
+		return archetype_library.next_archetype_stable_id if archetype_library != null else next_archetype_stable_id
+	set(value):
+		if archetype_library != null:
+			archetype_library.next_archetype_stable_id = value
+		else:
+			next_archetype_stable_id = value
 @export var next_path_id: int = PATH_ID_START
 
 @export var scene_extras: Array = []
@@ -54,6 +70,10 @@ var camera_poses: Array = [] # Array[GDCameraPoseSystem.CameraPose]
 		camera_poses = data.get("camera_poses", []).filter(func(c: Variant) -> bool: return c is GDCameraPoseSystem.CameraPose)
 
 static var _codec: GDDataCodec = null
+
+func _validate_property(property: Dictionary) -> void:
+	if archetype_library != null and property.name in ["archetypes", "next_archetype_stable_id"]:
+		property.usage &= ~PROPERTY_USAGE_STORAGE
 
 ## 关卡路径与相机机位（GDPathSystem / GDCameraPoseSystem 内部类）的编解码器。
 static func codec() -> GDDataCodec:
@@ -484,6 +504,8 @@ func find_archetype_by_stable_id(arch_stable_id: int) -> GDArchetypeRes:
 	for a in archetypes:
 		if a != null and a.stable_id == arch_stable_id:
 			return a
+	if arch_stable_id == GDActorSpawnRuntime.ARCHETYPE_ID:
+		return GDActorSpawnRuntime.archetype()
 	return null
 
 func _collect_occupied_instance_ids() -> Dictionary:

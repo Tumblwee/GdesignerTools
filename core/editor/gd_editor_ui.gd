@@ -352,6 +352,15 @@ static func hue_color(seed: int) -> Color:
 	return Color.from_hsv(hues[absi(seed) % hues.size()], 0.52, 0.9)
 
 
+## 类型目录是标识色的唯一来源；停用类型保留颜色，缺失和未分类使用中性色。
+static func type_color(catalog: Resource, type_id: int) -> Color:
+	if catalog != null and type_id > 0:
+		for entry in catalog.entries:
+			if entry != null and entry.stable_id == type_id:
+				return entry.get_display_color()
+	return Color(0.65, 0.65, 0.65)
+
+
 static func paint_round_rect(canvas: CanvasItem, rect: Rect2, bg: Color, border: Color = Color(0, 0, 0, 0), radius: int = 8, border_w: int = 1) -> void:
 	if canvas == null or rect.size.x < 1.0 or rect.size.y < 1.0:
 		return

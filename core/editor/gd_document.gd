@@ -18,8 +18,12 @@ static var _tracked_resources: Array[WeakRef] = []
 static var _saving_paths: Dictionary = {}
 
 var resource: Resource
+## 共享资产有自己的文档，关卡撤销不能回滚其它关卡的库或全局目录。
+var snapshot_exclusions: Array[Resource] = []
 ## 撤销 / 重做写回模型之后调用，用于同步模型之外的状态（例如场景节点）。
 var on_restored: Callable = Callable()
+## 可选的跨资产引用检查，在撤销快照写回之前执行。
+var can_restore: Callable = Callable()
 
 var _history: Array[Dictionary] = []
 var _cursor: int = 0
@@ -47,8 +51,9 @@ var redo_label: String:
 		return str(_history[_cursor + 1]["label"]) if can_redo else ""
 
 
-func _init(p_resource: Resource) -> void:
+func _init(p_resource: Resource, exclusions: Array[Resource] = []) -> void:
 	resource = p_resource
+	snapshot_exclusions = exclusions
 	_track_resource(resource)
 	_history.append(_entry(""))
 
@@ -211,10 +216,12 @@ static func _existing_path_case(absolute: String) -> String:
 
 
 func _entry(label: String) -> Dictionary:
-	return {"label": label, "snapshot": capture(resource)}
+	return {"label": label, "snapshot": capture(resource, snapshot_exclusions)}
 
 
 func _move_to(index: int) -> bool:
+	if can_restore.is_valid() and not bool(can_restore.call(_history[index]["snapshot"])):
+		return false
 	_cursor = index
 	restore(_history[_cursor]["snapshot"])
 	if on_restored.is_valid():
@@ -231,9 +238,9 @@ func _trim() -> void:
 		_saved_cursor = maxi(_saved_cursor - 1, -1)
 
 
-static func capture(root: Resource) -> Dictionary:
+static func capture(root: Resource, exclusions: Array[Resource] = []) -> Dictionary:
 	var table := {}
-	_visit(root, table)
+	_visit(root, table, exclusions)
 	return table
 
 
@@ -244,21 +251,23 @@ static func restore(table: Dictionary) -> void:
 			res.set(field, _isolated(fields[field]))
 
 
-static func _visit(value: Variant, table: Dictionary) -> void:
+static func _visit(value: Variant, table: Dictionary, exclusions: Array[Resource] = []) -> void:
 	if value is Array:
 		for item: Variant in value:
-			_visit(item, table)
+			_visit(item, table, exclusions)
 	elif value is Dictionary:
 		for item: Variant in value.values():
-			_visit(item, table)
-	elif value is Resource and value.get_script() != null and not table.has(value):
+			_visit(item, table, exclusions)
+	elif value is Resource and value.get_script() != null and not table.has(value) and not exclusions.has(value):
 		var fields := {&"resource_name": value.resource_name}
 		table[value] = fields
 		for prop: Dictionary in value.get_property_list():
 			if prop["usage"] & PROPERTY_USAGE_STORAGE and prop["usage"] & PROPERTY_USAGE_SCRIPT_VARIABLE:
 				var field: Variant = value.get(prop["name"])
 				fields[StringName(prop["name"])] = _isolated(field)
-				_visit(field, table)
+				if value is GDActorReferenceRes and prop["name"] in ["library", "standalone_archetype"]:
+					continue # 引用的演员资产有自己的文档，关卡撤销只恢复引用。
+				_visit(field, table, exclusions)
 
 
 static func _isolated(value: Variant) -> Variant:

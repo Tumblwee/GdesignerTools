@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="GDLevelArchetypeRes" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gdesigner_tools/level_editor/runtime/gd_level_archetype_res.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+resource_name = "PlacementArchetype_Builtin_ActorSpawnPoint"
+stable_id = 1
+display_name = "演员生成点"
+manufactured_prefab_address = "res://addons/gdesigner_tools/actor_editor/builtin/ActorSpawnPoint3D.tscn"

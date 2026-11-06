@@ -21,11 +21,14 @@ var layout: GDLevelSceneRes = null
 
 
 func _initialize() -> void:
+	GDLevelLibraries.storage_root = "user://test_level_page_libraries_%d" % Time.get_ticks_usec()
 	_run.call_deferred()
 
 
 func _run() -> void:
 	root.size = Vector2i(1280, 800)
+	# 鼠标输入用窗口坐标；不继承宿主游戏的 1600x900 拉伸设置。
+	root.content_scale_size = root.size
 	page = TestLevelPage.new()
 	root.add_child(page)
 	page.position = Vector2.ZERO
@@ -132,6 +135,7 @@ func _test_stale_instance_callbacks() -> void:
 	page.set_layout(replacement)
 	var target := page.find_placement(id)
 	var steps := page.doc._cursor
+	var was_dirty := page.doc.dirty
 	# The old form is detached and queued for deletion; callbacks may still arrive this frame.
 	stale_position.value = 101.0
 	stale_name.text = "Wrong level name"
@@ -146,7 +150,7 @@ func _test_stale_instance_callbacks() -> void:
 		rename.confirmed.emit()
 		rename.hide()
 	_check(page.find_placement(id) == target and layout.editor_try_get_placement(id).get("inst") == original, "stale fields and dialogs cannot change either level after switching to an asset with the same instance ID")
-	_check(page.doc._cursor == steps and not page.doc.dirty, "stale callbacks do not dirty the newly opened document")
+	_check(page.doc._cursor == steps and page.doc.dirty == was_dirty, "stale callbacks do not dirty the newly opened document")
 	page.set_layout(layout)
 	page.select_placement(id)
 	_check(page.selected_placement() == id, "switching back restores editable instance selection")
@@ -199,13 +203,7 @@ func _test_archetypes() -> void:
 	rename_dialog.hide()
 	var uses := layout.editor_count_placements_by_archetype_stable_id(block.stable_id)
 	page.commands.delete_archetype(block)
-	var dialog := _last_dialog()
-	_check(uses > 0 and dialog != null and str(dialog.dialog_text).contains(str(uses)), "deleting a used archetype asks first and states the count")
-	dialog.confirmed.emit()
-	dialog.hide()
-	_check(not layout.archetypes.has(block) and layout.editor_count_placements_by_archetype_stable_id(block.stable_id) == 0, "delete cascades to its instances")
-	page.doc.undo()
-	_check(layout.archetypes.has(block) and layout.editor_count_placements_by_archetype_stable_id(block.stable_id) == uses, "undo restores archetype and instances")
+	_check(layout.archetypes.has(block) and layout.editor_count_placements_by_archetype_stable_id(block.stable_id) == uses, "shared prototype deletion preserves existing placements")
 	page.commands.delete_archetype(created)
 	_check(not layout.archetypes.has(created) and _last_dialog() == null, "unused archetype is deleted without a dialog")
 
@@ -302,7 +300,7 @@ func _test_cameras() -> void:
 func _test_save_reload() -> void:
 	var pid: int = layout.paths[0].path_id
 	var knot := page.find_path(pid).spline.knots[0].position
-	_check(page.doc.save(SAVE_PATH) == OK and not page.doc.dirty, "level saves to user://")
+	_check(page._save_as(page.doc, SAVE_PATH) == OK and not page.doc.dirty, "level saves to user://")
 	var loaded := ResourceLoader.load(SAVE_PATH, "", ResourceLoader.CACHE_MODE_IGNORE) as GDLevelSceneRes
 	_check(loaded != null and loaded.paths.size() == 1 and loaded.paths[0].knot_count == 3 and loaded.paths[0].spline.knots[0].position.is_equal_approx(knot), "paths and knots survive reload")
 	_check(loaded.camera_poses.size() == 1 and is_equal_approx(loaded.camera_poses[0].fov, 42.0) and loaded.camera_poses[0].has_bound, "cameras survive reload")
