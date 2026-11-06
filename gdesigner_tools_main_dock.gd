@@ -4,13 +4,14 @@ extends VBoxContainer
 
 ## 工作台外壳：顶部页签、当前页面、底部状态栏、可收起的控制台。
 
-const TAB_CONSOLE := 4
-const TITLES: PackedStringArray = ["关卡", "演员", "技能", "引导"]
+const TITLES: PackedStringArray = ["关卡", "演员", "技能", "引导", "游戏进程"]
+static var TAB_CONSOLE: int = TITLES.size()
 
 var level_editor: GDLevelPage = null
 var actor_editor: GDActorPage = null
 var skill_editor: GDSkillPage = null
 var guide_editor: GDGuidePage = null
+var game_mode_editor: GDGameModePage = null
 var cli_console: GDConsolePanel = null
 
 var _pages: Array[GDPage] = []
@@ -50,7 +51,7 @@ func activate_current() -> void:
 
 
 func save_all() -> void:
-	for page in [actor_editor, level_editor, skill_editor, guide_editor]:
+	for page in _pages:
 		page.save_all()
 
 
@@ -84,7 +85,8 @@ func _build_pages() -> void:
 	actor_editor.level_provider = level_editor.get_current_layout
 	skill_editor = GDSkillPage.new()
 	guide_editor = GDGuidePage.new()
-	_pages = [level_editor, actor_editor, skill_editor, guide_editor]
+	game_mode_editor = GDGameModePage.new()
+	_pages = [level_editor, actor_editor, skill_editor, guide_editor, game_mode_editor]
 	_page_host = VBoxContainer.new()
 	_page_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_page_host)

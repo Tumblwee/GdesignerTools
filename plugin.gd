@@ -7,16 +7,19 @@ extends EditorPlugin
 ## 不实现 _handles()，避免抢走当前节点的检查器。
 
 const MENU_PREFIX := "GdesignerTools: "
-const MENU_ITEMS := ["关卡编辑器", "演员编辑器", "技能编辑器", "引导编辑器", "控制台"]
+const MENU_ITEMS := ["关卡编辑器", "演员编辑器", "技能编辑器", "引导编辑器", "游戏进程编辑器", "控制台"]
 
 var _window: GdesignerToolsWindow = null
 var _drop_host: GDLevelSceneDrop.Host = null
 var _toolbar_btn: Button = null
 var _previous_scene: WeakRef = null
+var _game_mode_debugger: GDGameModeDebuggerPlugin = null
 
 
 func _enter_tree() -> void:
 	GDCoreServices.ensure_exists()
+	_game_mode_debugger = GDGameModeDebuggerPlugin.new()
+	add_debugger_plugin(_game_mode_debugger)
 	set_process(true)
 	set_force_draw_over_forwarding_enabled()
 	set_input_event_forwarding_always_enabled()
@@ -41,6 +44,9 @@ func _enter_tree() -> void:
 
 
 func _exit_tree() -> void:
+	_game_mode_debugger.shutdown()
+	remove_debugger_plugin(_game_mode_debugger)
+	_game_mode_debugger = null
 	for item in MENU_ITEMS:
 		remove_tool_menu_item(MENU_PREFIX + item)
 	GDLevelSceneDrop.shutdown()
@@ -52,6 +58,8 @@ func _exit_tree() -> void:
 
 func _process(_delta: float) -> void:
 	GDLevelSceneDrop.poll()
+	if _game_mode_debugger != null:
+		_game_mode_debugger.poll()
 
 
 func _on_scene_changed(scene_root: Node) -> void:

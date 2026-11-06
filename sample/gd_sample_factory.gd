@@ -8,6 +8,8 @@ extends RefCounted
 const ACTOR_LIBRARY_PATH := "res://game_res/sample/actors/ActorLibrary_Sample.tres"
 const LEVEL_SCENE_PATH := "res://game_res/sample/level/LevelScene_Sample.tres"
 const PREFAB_DIR := "res://game_res/sample/prefabs"
+const GAME_MODE_CONFIG_PATH := "res://game_res/sample/game_mode/GameMode_Sample.tres"
+const GAME_MODE_SCENE_PATH := "res://game_res/sample/game_mode/GameMode_Sample.tscn"
 
 const ADDR_UNIT := "Entity_Sample_Unit"
 const ADDR_GUIDE := "Entity_Sample_Guide"
@@ -40,6 +42,70 @@ static func load_level_scene() -> GDLevelSceneRes:
 	if loaded is GDLevelSceneRes:
 		return loaded as GDLevelSceneRes
 	return build_level_scene()
+
+
+## 单独生成游戏进程示例，不修改工程主场景，也不覆盖用户已编辑的示例。
+static func ensure_game_mode_assets() -> void:
+	if not ResourceLoader.exists(GAME_MODE_CONFIG_PATH):
+		_save_resource(build_game_mode_config(), GAME_MODE_CONFIG_PATH)
+	if not ResourceLoader.exists(GAME_MODE_SCENE_PATH):
+		var root := Node.new()
+		root.name = "GameModeSample"
+		root.set_script(load("res://addons/gdesigner_tools/sample/game_mode/sample_game_mode_scene.gd"))
+		var bootstrap := Node.new()
+		bootstrap.name = "GameModeBootstrap"
+		bootstrap.set_script(load("res://addons/gdesigner_tools/game_mode_editor/runtime/gd_game_mode_bootstrap.gd"))
+		bootstrap.set("config_path", GAME_MODE_CONFIG_PATH)
+		root.add_child(bootstrap)
+		bootstrap.owner = root
+		var packed := PackedScene.new()
+		var err := packed.pack(root)
+		root.free()
+		if err == OK:
+			_save_resource(packed, GAME_MODE_SCENE_PATH)
+		else:
+			push_error("游戏进程示例打包失败：%s" % error_string(err))
+
+
+static func load_game_mode_config() -> GDGameModeConfigRes:
+	ensure_game_mode_assets()
+	var loaded := ResourceLoader.load(GAME_MODE_CONFIG_PATH)
+	return loaded as GDGameModeConfigRes if loaded is GDGameModeConfigRes else build_game_mode_config()
+
+
+static func build_game_mode_config() -> GDGameModeConfigRes:
+	var config := GDGameModeConfigRes.new()
+	config.resource_name = "GameMode_Sample"
+	config.display_name = "游戏进程示例"
+	config.default_state_key = &"login"
+	config.global_graph_position = Vector2(40, 40)
+	config.next_module_id = 4
+	var global := _game_mode_module(1, "会话服务", "sample_global_module.gd")
+	config.global_modules.append(global)
+	var login := GDGameStateBindingRes.new()
+	login.key = &"login"
+	login.display_name = "登录"
+	login.graph_position = Vector2(40, 260)
+	var login_module := _game_mode_module(2, "登录流程", "sample_login_module.gd")
+	login_module.params = load("res://addons/gdesigner_tools/sample/game_mode/sample_flow_params.gd").new()
+	login.modules.append(login_module)
+	config.states.append(login)
+	var game := GDGameStateBindingRes.new()
+	game.key = &"game"
+	game.display_name = "游戏"
+	game.graph_position = Vector2(420, 260)
+	game.modules.append(_game_mode_module(3, "游戏流程（可重启）", "sample_game_module.gd"))
+	config.states.append(game)
+	config.prepare_save()
+	return config
+
+
+static func _game_mode_module(id: int, title: String, script_name: String) -> GDGameModuleEntryRes:
+	var entry := GDGameModuleEntryRes.new()
+	entry.module_id = id
+	entry.display_name = title
+	entry.module_script = load("res://addons/gdesigner_tools/sample/game_mode/" + script_name)
+	return entry
 
 
 static func build_actor_library() -> GDActorLibraryRes:

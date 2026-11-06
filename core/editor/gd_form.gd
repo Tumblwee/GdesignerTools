@@ -249,6 +249,9 @@ func _auto_field(target: Object, prop: Dictionary, caption: String, enum_def: Va
 		else:
 			target.set(prop_name, value)
 	var number_opts: Dictionary = opts.get("numbers", {}).get(prop_name, {})
+	if bool(opts.get("readonly", false)):
+		note("%s: %s（只读）" % [caption, str(read.call())])
+		return
 	if enum_def != null:
 		choice(caption, _enum_items(enum_def), read, write)
 		return
@@ -264,14 +267,52 @@ func _auto_field(target: Object, prop: Dictionary, caption: String, enum_def: Va
 			number(caption, read, write, number_opts)
 		TYPE_STRING:
 			text(caption, read, write, {"multiline": int(prop["hint"]) == PROPERTY_HINT_MULTILINE_TEXT})
+		TYPE_STRING_NAME:
+			text(caption, read, func(value: String) -> void: write.call(StringName(value)))
+		TYPE_COLOR:
+			color(caption, read, write)
 		TYPE_VECTOR2:
 			vector2(caption, read, write)
 		TYPE_VECTOR3:
 			vector3(caption, read, write)
 		TYPE_OBJECT:
 			var nested: Variant = target.get(prop_name)
-			if nested is Resource and nested.get_script() != null and nested.resource_path.is_empty():
-				auto(nested, opts.merged({"only": [], "skip": []}, true))
+			if nested is Resource and nested.get_script() != null and (nested.resource_path.is_empty() or "::" in nested.resource_path):
+				var nested_script: Script = nested.get_script()
+				auto(nested, opts.merged({"only": [], "skip": [], "readonly": not nested_script.is_tool()}, true))
+			else:
+				resource_reference(caption, read, write, str(prop.get("hint_string", "Resource")))
+		_:
+			note("%s: %s（首版不支持编辑）" % [caption, str(read.call())])
+
+
+func color(label: String, read: Callable, write: Callable) -> ColorPickerButton:
+	var picker := ColorPickerButton.new()
+	picker.color = read.call()
+	var can_write := _write_guard()
+	picker.color_changed.connect(func(value: Color) -> void:
+		if can_write.call() and not _syncing and value != read.call():
+			write.call(value)
+			committed.emit(label, true)
+	)
+	_readers.append(func() -> void: picker.color = read.call())
+	return row(label, picker) as ColorPickerButton
+
+
+func resource_reference(label: String, read: Callable, write: Callable, base_type: String = "Resource") -> Control:
+	if not Engine.is_editor_hint():
+		return note("%s: %s（资源引用仅在编辑器中可编辑）" % [label, str(read.call())])
+	var picker := EditorResourcePicker.new()
+	picker.base_type = base_type if not base_type.is_empty() else "Resource"
+	picker.edited_resource = read.call() as Resource
+	var can_write := _write_guard()
+	picker.resource_changed.connect(func(value: Resource) -> void:
+		if can_write.call() and not _syncing and value != read.call():
+			write.call(value)
+			committed.emit(label, false)
+	)
+	_readers.append(func() -> void: picker.edited_resource = read.call() as Resource)
+	return row(label, picker)
 
 
 static func _enum_items(enum_def: Variant) -> Array:

@@ -813,7 +813,7 @@ func _test_ui_windows_and_main_dock() -> void:
 	_check(win.dock != null and not win.exclusive and not win.transient, "GdesignerTools window is an independent non-modal host")
 	var dock := win.dock
 	get_root().add_child(win)
-	_check(dock.level_editor != null and dock.actor_editor != null and dock.skill_editor != null and dock.guide_editor != null and dock.cli_console != null, "Shell hosts all four pages and the console")
+	_check(dock.level_editor != null and dock.actor_editor != null and dock.skill_editor != null and dock.guide_editor != null and dock.game_mode_editor != null and dock.cli_console != null, "Shell hosts all five pages and the console")
 
 	dock.switch_to_tab(1)
 	_check(dock.current_page == dock.actor_editor and dock.actor_editor.visible and not dock.level_editor.visible, "Switching tabs shows exactly one page")

@@ -25,6 +25,9 @@ var _doc_label: Label = null
 var _save_btn: Button = null
 var _undo_btn: Button = null
 var _redo_btn: Button = null
+var _panes: Control = null
+var _status_row: Control = null
+var _bottom_split: VSplitContainer = null
 
 
 func _init() -> void:
@@ -264,6 +267,7 @@ func set_panes(left: Control, center: Control, right: Control, left_width: int =
 	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(outer)
+	_panes = outer
 	var host: Container = outer
 	if left != null:
 		left.custom_minimum_size.x = 180
@@ -286,3 +290,32 @@ func set_panes(left: Control, center: Control, right: Control, left_width: int =
 static func _remember_split(split: SplitContainer, key: String, default_offset: int) -> void:
 	split.split_offset = GDHybridPrefs.get_int("Gdesigner.Split.%s" % key, default_offset)
 	split.dragged.connect(func(offset: int) -> void: GDHybridPrefs.set_int("Gdesigner.Split.%s" % key, offset))
+
+
+## Optional second toolbar row. Existing pages retain their original layout.
+func set_status_row(control: Control) -> void:
+	if is_instance_valid(_status_row):
+		remove_child(_status_row)
+		_status_row.queue_free()
+	_status_row = control
+	if control != null:
+		add_child(control)
+		move_child(control, 1)
+
+
+## A resizable bottom panel, with its height remembered per page.
+func set_bottom(control: Control, default_height: int = 180) -> void:
+	if _bottom_split == null:
+		_bottom_split = VSplitContainer.new()
+		_bottom_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		add_child(_bottom_split)
+		if _panes != null:
+			_panes.reparent(_bottom_split)
+		var page_key := String((get_script() as Script).get_global_name())
+		_remember_split(_bottom_split, "%s.bottom" % page_key, -default_height)
+	elif _bottom_split.get_child_count() > 1:
+		var previous := _bottom_split.get_child(1)
+		_bottom_split.remove_child(previous)
+		previous.queue_free()
+	if control != null:
+		_bottom_split.add_child(control)
