@@ -41,6 +41,8 @@ func _enter_tree() -> void:
 	add_control_to_container(CONTAINER_TOOLBAR, _toolbar_btn)
 	for i in range(MENU_ITEMS.size()):
 		add_tool_menu_item(MENU_PREFIX + MENU_ITEMS[i], _open.bind(i))
+	# Re-enabling the plugin while a workspace is already open emits no scene_changed.
+	_window.dock.level_editor.on_scene_changed.call_deferred()
 
 
 func _exit_tree() -> void:
@@ -56,8 +58,10 @@ func _exit_tree() -> void:
 	_drop_host.queue_free()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	GDLevelSceneDrop.poll()
+	if _window != null:
+		_window.dock.level_editor.poll_scene_preview(delta)
 	if _game_mode_debugger != null:
 		_game_mode_debugger.poll()
 

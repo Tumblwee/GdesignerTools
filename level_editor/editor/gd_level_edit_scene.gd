@@ -2,9 +2,13 @@
 class_name GDLevelEditScene
 extends RefCounted
 
-## 关卡的场景工作区。scene_path 是编辑场景，art / logic 场景只供运行时装配。
+## 编辑工作区保留可编辑实例，临时预览复用美术场景或游戏提供的运行时构建器。
 const SCENE_DIR := "res://game_res/level/editing"
 const META_EDIT_LAYOUT := "gdesigner_edit_layout_id"
+const PREVIEW_ROOT := "RuntimePreview"
+const PREVIEW_DRIVER := "GDesignerPreview"
+const META_PREVIEW_SIGNATURE := "gdesigner_preview_signature"
+const DRIVER_SCRIPT := "res://addons/gdesigner_tools/level_editor/editor/gd_level_preview.gd"
 
 
 static func is_runtime_path(layout: GDLevelSceneRes, path: String) -> bool:
@@ -67,6 +71,7 @@ static func ensure_scene(layout: GDLevelSceneRes) -> Dictionary:
 		placements.set_meta(GDLevelSceneDrop.META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
 		scene_root.add_child(placements)
 		placements.owner = scene_root
+		ensure_preview_driver(layout, scene_root)
 		var packed := PackedScene.new()
 		var saved := packed.pack(scene_root)
 		scene_root.free()
@@ -88,6 +93,57 @@ static func open_scene(layout: GDLevelSceneRes) -> Dictionary:
 	if bool(result.get("ok", false)) and Engine.is_editor_hint():
 		EditorInterface.open_scene_from_path(str(result["path"]))
 	return result
+
+
+static func ensure_preview_driver(layout: GDLevelSceneRes, scene_root: Node) -> void:
+	if layout == null or scene_root == null or layout.resource_path.is_empty():
+		return
+	var driver := scene_root.get_node_or_null(PREVIEW_DRIVER)
+	var changed := false
+	if driver == null:
+		driver = Node.new()
+		driver.set_script(load(DRIVER_SCRIPT))
+		driver.name = PREVIEW_DRIVER
+		driver.set("layout_path", layout.resource_path)
+		scene_root.add_child(driver)
+		driver.owner = scene_root
+		changed = true
+	elif driver.get_script() == load(DRIVER_SCRIPT) and driver.get("layout_path") != layout.resource_path:
+		driver.set("layout_path", layout.resource_path)
+		changed = true
+	if changed and Engine.is_editor_hint() and EditorInterface.get_edited_scene_root() == scene_root:
+		EditorInterface.mark_scene_as_unsaved()
+
+
+static func refresh_preview(layout: GDLevelSceneRes, scene_root: Node) -> void:
+	if not is_edit_scene(layout, scene_root):
+		return
+	ensure_preview_driver(layout, scene_root)
+	var signature := layout.editor_preview_signature()
+	var previous := scene_root.get_node_or_null(PREVIEW_ROOT)
+	if previous != null:
+		# Never replace a user-authored node that happens to use this name.
+		if not previous.has_meta(META_EDIT_LAYOUT) or previous.owner != null:
+			return
+		if previous.get_meta(META_PREVIEW_SIGNATURE, "") == signature:
+			return
+		scene_root.remove_child(previous)
+		previous.queue_free()
+	var preview := layout.editor_create_scene_preview()
+	if preview != null:
+		preview.name = PREVIEW_ROOT
+		preview.set_meta(META_EDIT_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+		preview.set_meta(META_PREVIEW_SIGNATURE, signature)
+		GDPreviewScene.prepare(preview)
+		scene_root.add_child(preview)
+		GDPreviewScene.freeze(preview)
+		_clear_preview_owners(preview)
+
+
+static func _clear_preview_owners(node: Node) -> void:
+	node.owner = null
+	for child in node.get_children():
+		_clear_preview_owners(child)
 
 
 static func _root_meta(state: SceneState, key: StringName) -> String:

@@ -437,13 +437,23 @@ static func sync_layout_to_scene(layout: GDLevelSceneRes) -> Dictionary:
 
 ## 把场景里实例节点的位姿写回关卡。返回是否有改动。
 static func pull_transforms_from_scene(layout: GDLevelSceneRes, scene_root: Node = null) -> bool:
-	if layout == null or _scene_parent(layout, false, scene_root) == null:
+	var host := _scene_parent(layout, false, scene_root) if layout != null else null
+	if host == null:
 		return false
+	# Preview polling visits the whole level frequently; index once instead of
+	# rescanning every scene child for each placement (quadratic on large maps).
+	var nodes := {}
+	for child in host.get_children():
+		var id := int(child.get_meta(META_ID, 0))
+		if id > 0 and not nodes.has(id) and _node_matches_layout(child, layout, scene_root):
+			nodes[id] = child
+			child.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
+	host.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))
 	var changed := false
 	for inst in layout.placements.duplicate():
 		if inst == null:
 			continue
-		var node := find_placed_node(inst.instance_id, layout, scene_root)
+		var node: Node = nodes.get(inst.instance_id)
 		var pos: Vector3 = inst.position
 		var euler: Vector3 = inst.euler_angles
 		var scl: Vector3 = inst.scale
@@ -506,6 +516,14 @@ static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) 
 	for id in by_id:
 		var inst: GDPlacementData.PlacementInstance = by_id[id]
 		var node: Node = placed.get(id)
+		# Upgrade workspaces saved before the game's custom placement preview existed.
+		if node != null and not GDActorSpawnRuntime.is_spawn(inst) and not node.has_meta("gdesigner_custom_preview"):
+			var custom := layout.editor_create_placement_visual(inst, host is Node2D)
+			if custom != null:
+				custom.free()
+				_spawned.erase(_cache_key(layout, id))
+				node.free()
+				node = null
 		var marker: GDSceneEditorRuntime.PlacementInstanceMarker = null
 		if node != null:
 			marker = node.get_node_or_null("PlacementInstanceMarker") as GDSceneEditorRuntime.PlacementInstanceMarker
@@ -522,6 +540,9 @@ static func reconcile_scene(layout: GDLevelSceneRes, scene_parent: Node = null) 
 			_apply_pose(node, inst.position, inst.euler_angles, inst.scale)
 		else:
 			spawn_into(layout, id, host)
+	var scene_root := host.get_parent()
+	if scene_root != null:
+		GDLevelEditScene.refresh_preview(layout, scene_root)
 
 
 static func apply_transform(inst_id: int, pos: Vector3, euler: Vector3, scl: Vector3, layout: GDLevelSceneRes = null) -> void:
@@ -630,7 +651,15 @@ static func spawn_into(layout: GDLevelSceneRes, inst_id: int, parent: Node) -> N
 		return null
 	var inst: GDPlacementData.PlacementInstance = found["inst"]
 	var arch := layout.find_archetype_by_stable_id(inst.archetype_stable_id)
-	var node := GDActorSpawnRuntime.create_point(inst, parent is Node2D, true) if GDActorSpawnRuntime.is_spawn(inst) else _build_visual(arch, parent is Node2D)
+	var node: Node
+	if GDActorSpawnRuntime.is_spawn(inst):
+		node = GDActorSpawnRuntime.create_point(inst, parent is Node2D, true)
+	else:
+		node = layout.editor_create_placement_visual(inst, parent is Node2D)
+		if node != null:
+			node.set_meta("gdesigner_custom_preview", true)
+		else:
+			node = _build_visual(arch, parent is Node2D)
 	node.name = _safe_name(GDPlacementData.PlacementInstanceIdRangeLogic.resolve_display_name(inst, arch), inst_id)
 	node.set_meta(META_ID, inst_id)
 	node.set_meta(META_LAYOUT, GDSceneEditorRuntime.layout_identity(layout))

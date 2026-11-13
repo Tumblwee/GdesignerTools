@@ -71,6 +71,24 @@ var camera_poses: Array = [] # Array[GDCameraPoseSystem.CameraPose]
 
 static var _codec: GDDataCodec = null
 
+
+## Games that compile placements into geometry can share their runtime renderer here.
+## The returned tree is temporary: it never becomes part of the saved editing scene.
+func editor_create_scene_preview() -> Node:
+	if art_scene_path.is_empty() or not ResourceLoader.exists(art_scene_path, "PackedScene"):
+		return null
+	var packed := load(art_scene_path) as PackedScene
+	return packed.instantiate() if packed != null else null
+
+
+func editor_preview_signature() -> String:
+	return art_scene_path
+
+
+## null retains the standard prefab preview. A custom node must remain editable.
+func editor_create_placement_visual(_inst: GDPlacementData.PlacementInstance, _as_2d: bool) -> Node:
+	return null
+
 func _validate_property(property: Dictionary) -> void:
 	if archetype_library != null and property.name in ["archetypes", "next_archetype_stable_id"]:
 		property.usage &= ~PROPERTY_USAGE_STORAGE

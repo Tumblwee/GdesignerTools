@@ -39,6 +39,8 @@ var _opening_scene: bool = false
 var _library_label: Label = null
 var _last_library: GDLevelLibraryRes = null
 var _history_doc: GDDocument = null
+var _preview_poll_elapsed := 0.0
+var _preview_known_poses: Array = []
 
 var library: GDLevelLibraryRes:
 	get:
@@ -184,16 +186,17 @@ func activate() -> void:
 	if not _opened_default and doc == null:
 		_opened_default = true
 		set_layout(GDSampleFactory.load_level_scene())
-	if doc != null and GDLevelSceneDrop.pull_transforms_from_scene(layout):
-		doc.commit("同步场景位姿")
-	else:
-		_refresh()
+	if doc != null:
+		_pull_scene(doc)
+	_refresh()
 
 
 func set_layout(new_layout: GDLevelSceneRes) -> void:
 	GDLevelSceneDrop.cancel()
 	if doc != null:
 		_pull_scene(doc)
+		if doc.changed.is_connected(_remember_preview_poses):
+			doc.changed.disconnect(_remember_preview_poses)
 	_clear_selection()
 	var assigned_identity := new_layout != null and new_layout.layout_id.is_empty()
 	GDLevelSceneDrop.ensure_layout_identity(new_layout)
@@ -218,6 +221,8 @@ func set_layout(new_layout: GDLevelSceneRes) -> void:
 	open_document(new_layout)
 	_history_doc = doc
 	if new_layout != null:
+		if not doc.changed.is_connected(_remember_preview_poses):
+			doc.changed.connect(_remember_preview_poses)
 		if migrated or (assigned_identity and not new_layout.resource_path.is_empty()) or bool(scene_setup.get("binding_changed", false)):
 			doc.mark_unsaved()
 		new_layout.editor_reconcile_next_ids_after_load()
@@ -225,6 +230,7 @@ func set_layout(new_layout: GDLevelSceneRes) -> void:
 			var restored_doc: GDDocument = _docs[new_layout]
 			restored_doc.snapshot_exclusions = [new_layout.archetype_library, GDLevelLibraries.catalog()]
 			GDLevelSceneDrop.reconcile_scene(new_layout)
+	_preview_known_poses = _placement_pose_state()
 	_refresh()
 	_plan.fit_all()
 	if new_layout != null and Engine.is_editor_hint():
@@ -277,9 +283,45 @@ func _finish_open_scene(target: GDLevelSceneRes) -> void:
 
 func on_scene_changed() -> void:
 	GDLevelSceneDrop.cancel()
+	# Opening a saved workspace directly also opens its document, so viewport
+	# edits participate in the same save/undo flow as edits from the level page.
+	var scene_root := GDLevelSceneDrop.edited_root()
+	var driver := scene_root.get_node_or_null(GDLevelEditScene.PREVIEW_DRIVER) if scene_root != null else null
+	if driver != null and driver.get_script() == load(GDLevelEditScene.DRIVER_SCRIPT):
+		var path: String = driver.get("layout_path")
+		var target := load(path) as GDLevelSceneRes if ResourceLoader.exists(path) else null
+		if target != layout and GDLevelEditScene.is_edit_scene(target, scene_root):
+			set_layout(target)
+			return
 	if not can_edit_scene():
 		_clear_selection()
 	_refresh()
+
+
+## Native viewport transforms become visible in the compiled preview on release.
+func poll_scene_preview(delta: float) -> void:
+	_preview_poll_elapsed += delta
+	if _preview_poll_elapsed < 0.25 or doc == null or not can_edit_scene():
+		return
+	_preview_poll_elapsed = 0.0
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or GDLevelSceneDrop.is_active():
+		return
+	_pull_scene(doc)
+	_preview_known_poses = _placement_pose_state()
+	GDLevelEditScene.refresh_preview(layout, GDLevelSceneDrop.edited_root())
+
+
+func _placement_pose_state() -> Array:
+	var poses: Array = []
+	if layout != null:
+		for inst in layout.placements:
+			if inst != null:
+				poses.append([inst.instance_id, inst.archetype_stable_id, inst.position, inst.euler_angles, inst.scale])
+	return poses
+
+
+func _remember_preview_poses() -> void:
+	_preview_known_poses = _placement_pose_state()
 
 
 func _step_history(back: bool) -> void:
@@ -355,6 +397,13 @@ func prepare_save(target: GDDocument) -> void:
 
 func _pull_scene(target: GDDocument, scene_root: Node = null) -> void:
 	if not target.resource is GDLevelSceneRes:
+		return
+	# A resource Inspector edit is a change to the source. Do not overwrite it
+	# with the previous viewport pose when polling, saving or switching scenes.
+	if target == doc and _placement_pose_state() != _preview_known_poses:
+		if scene_root == null or scene_root == GDLevelSceneDrop.edited_root():
+			GDLevelSceneDrop.reconcile_scene(layout)
+		target.commit("同步资源位姿")
 		return
 	if GDLevelSceneDrop.pull_transforms_from_scene(target.resource as GDLevelSceneRes, scene_root):
 		target.commit("同步场景位姿")
@@ -609,6 +658,8 @@ func _placement_ids() -> Array[int]:
 func _refresh() -> void:
 	_validate_selection()
 	var editable := can_edit_scene()
+	if editable:
+		GDLevelEditScene.refresh_preview(layout, GDLevelSceneDrop.edited_root())
 	_plan.editable = editable
 	_add_btn.disabled = not editable
 	_scene_hint.visible = layout != null and not editable
